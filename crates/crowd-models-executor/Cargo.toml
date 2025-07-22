@@ -1,0 +1,43 @@
+[package]
+name = "crowd-models-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "crowd-models-executor"
+path = "src/main.rs"
+
+[dependencies]
+# Core library
+crowd-models-core = { path = "../crowd-models-core" }
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# CLI
+clap.workspace = true
+
+# Configuration
+config.workspace = true
+directories.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# HTTP client for OpenAI
+reqwest = { version = "0.12", features = ["json"] }
+
+# Token counting
+tiktoken-rs = "0.6"
+
+# Utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true

@@ -1,0 +1,31 @@
+[package]
+name = "crowd-models-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "crowd-models-client"
+path = "src/main.rs"
+
+[dependencies]
+# Core library
+crowd-models-core = { path = "../crowd-models-core" }
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+
+# CLI
+clap.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true

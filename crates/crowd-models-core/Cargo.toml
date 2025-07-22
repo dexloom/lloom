@@ -1,0 +1,33 @@
+[package]
+name = "crowd-models-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# P2P networking
+libp2p = { workspace = true, features = ["request-response", "kad", "gossipsub", "noise", "yamux", "tcp", "macros", "cbor"] }
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# Blockchain integration
+alloy.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+
+# Error handling and utilities
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Cryptography
+hex.workspace = true
+rand.workspace = true
