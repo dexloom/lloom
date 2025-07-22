@@ -14,6 +14,12 @@ path = "src/main.rs"
 # Core library
 crowd-models-core = { path = "../crowd-models-core" }
 
+# P2P networking
+libp2p.workspace = true
+
+# Blockchain integration
+alloy.workspace = true
+
 # Async runtime
 tokio.workspace = true
 futures.workspace = true
@@ -42,3 +48,9 @@ serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 toml = "0.8"
+
+[dev-dependencies]
+tokio-test.workspace = true
+mockall.workspace = true
+wiremock.workspace = true
+tempfile.workspace = true

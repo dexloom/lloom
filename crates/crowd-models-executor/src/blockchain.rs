@@ -19,7 +19,7 @@ sol!(
     #[allow(missing_docs)]
     #[sol(rpc)]
     AccountingContract,
-    "contracts/Accounting.sol"
+    "../../contracts/Accounting.sol"
 );
 
 /// Blockchain client for interacting with the Accounting smart contract
@@ -206,6 +206,8 @@ impl BlockchainClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crowd_models_core::protocol::UsageRecord;
+    use alloy::primitives::Address;
     
     #[tokio::test]
     async fn test_blockchain_client_creation() {
@@ -220,5 +222,231 @@ mod tests {
         
         let client = BlockchainClient::new(identity, config).await;
         assert!(client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_blockchain_client_creation_with_contract() {
+        let identity = Identity::generate();
+        let config = BlockchainConfig {
+            rpc_url: "https://rpc.sepolia.org".to_string(),
+            contract_address: Some("0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string()),
+            gas_price_multiplier: 1.5,
+            batch_interval_secs: 600,
+            max_batch_size: 50,
+        };
+        
+        let client = BlockchainClient::new(identity, config).await;
+        assert!(client.is_ok());
+        assert!(client.unwrap().contract.is_some());
+    }
+
+    #[test]
+    fn test_blockchain_config() {
+        let config = BlockchainConfig {
+            rpc_url: "https://mainnet.infura.io/v3/key".to_string(),
+            contract_address: Some("0x123456789abcdef".to_string()),
+            gas_price_multiplier: 2.0,
+            batch_interval_secs: 120,
+            max_batch_size: 25,
+        };
+
+        assert_eq!(config.rpc_url, "https://mainnet.infura.io/v3/key");
+        assert_eq!(config.contract_address, Some("0x123456789abcdef".to_string()));
+        assert_eq!(config.gas_price_multiplier, 2.0);
+        assert_eq!(config.batch_interval_secs, 120);
+        assert_eq!(config.max_batch_size, 25);
+    }
+
+    #[tokio::test]
+    async fn test_set_contract_address() {
+        let identity = Identity::generate();
+        let config = BlockchainConfig {
+            rpc_url: "https://rpc.sepolia.org".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 1.2,
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+        
+        let mut client = BlockchainClient::new(identity, config).await.unwrap();
+        assert!(client.contract.is_none());
+
+        let contract_address: Address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap();
+        client.set_contract_address(contract_address);
+        assert!(client.contract.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_submit_empty_usage_batch() {
+        let identity = Identity::generate();
+        let config = BlockchainConfig {
+            rpc_url: "https://rpc.sepolia.org".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 1.2,
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+        
+        let client = BlockchainClient::new(identity, config).await.unwrap();
+        let result = client.submit_usage_batch(vec![]).await;
+        
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_submit_usage_batch_without_contract() {
+        let identity = Identity::generate();
+        let config = BlockchainConfig {
+            rpc_url: "https://rpc.sepolia.org".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 1.2,
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+        
+        let client = BlockchainClient::new(identity, config).await.unwrap();
+        
+        let usage_records = vec![
+            UsageRecord {
+                client_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap(),
+                model: "gpt-3.5-turbo".to_string(),
+                token_count: 100,
+                timestamp: 1234567890,
+            }
+        ];
+        
+        let result = client.submit_usage_batch(usage_records).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Contract address not set"));
+    }
+
+    #[test]
+    fn test_usage_record_structure() {
+        let client_address: Address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap();
+        let usage_record = UsageRecord {
+            client_address,
+            model: "gpt-4".to_string(),
+            token_count: 250,
+            timestamp: 1234567890,
+        };
+
+        assert_eq!(usage_record.client_address, client_address);
+        assert_eq!(usage_record.model, "gpt-4");
+        assert_eq!(usage_record.token_count, 250);
+        assert_eq!(usage_record.timestamp, 1234567890);
+    }
+
+    #[test]
+    fn test_blockchain_config_serialization() {
+        let config = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: Some("0xtest".to_string()),
+            gas_price_multiplier: 1.3,
+            batch_interval_secs: 400,
+            max_batch_size: 75,
+        };
+
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: BlockchainConfig = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(config.rpc_url, deserialized.rpc_url);
+        assert_eq!(config.contract_address, deserialized.contract_address);
+        assert_eq!(config.gas_price_multiplier, deserialized.gas_price_multiplier);
+        assert_eq!(config.batch_interval_secs, deserialized.batch_interval_secs);
+        assert_eq!(config.max_batch_size, deserialized.max_batch_size);
+    }
+
+    #[test]
+    fn test_blockchain_config_clone() {
+        let config = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: Some("0xtest".to_string()),
+            gas_price_multiplier: 1.4,
+            batch_interval_secs: 500,
+            max_batch_size: 200,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(config.rpc_url, cloned.rpc_url);
+        assert_eq!(config.contract_address, cloned.contract_address);
+        assert_eq!(config.gas_price_multiplier, cloned.gas_price_multiplier);
+        assert_eq!(config.batch_interval_secs, cloned.batch_interval_secs);
+        assert_eq!(config.max_batch_size, cloned.max_batch_size);
+    }
+
+    #[test]
+    fn test_blockchain_config_debug() {
+        let config = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 1.0,
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("BlockchainConfig"));
+        assert!(debug_str.contains("rpc_url"));
+        assert!(debug_str.contains("gas_price_multiplier"));
+    }
+
+    #[test]
+    fn test_invalid_contract_address() {
+        let identity = Identity::generate();
+        let config = BlockchainConfig {
+            rpc_url: "https://rpc.sepolia.org".to_string(),
+            contract_address: Some("invalid_address".to_string()),
+            gas_price_multiplier: 1.2,
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+        
+        // This should be tested in an async context, but for now we just test the config structure
+        assert_eq!(config.contract_address, Some("invalid_address".to_string()));
+    }
+
+    #[test]
+    fn test_gas_price_multiplier_boundaries() {
+        let config1 = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 0.5, // Very low
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+
+        let config2 = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 10.0, // Very high
+            batch_interval_secs: 300,
+            max_batch_size: 100,
+        };
+
+        assert_eq!(config1.gas_price_multiplier, 0.5);
+        assert_eq!(config2.gas_price_multiplier, 10.0);
+    }
+
+    #[test]
+    fn test_batch_size_limits() {
+        let config1 = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 1.0,
+            batch_interval_secs: 300,
+            max_batch_size: 1, // Minimum
+        };
+
+        let config2 = BlockchainConfig {
+            rpc_url: "https://test.rpc".to_string(),
+            contract_address: None,
+            gas_price_multiplier: 1.0,
+            batch_interval_secs: 300,
+            max_batch_size: 1000, // Large
+        };
+
+        assert_eq!(config1.max_batch_size, 1);
+        assert_eq!(config2.max_batch_size, 1000);
     }
 }

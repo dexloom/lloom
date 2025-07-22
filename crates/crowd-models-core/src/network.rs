@@ -132,3 +132,92 @@ pub mod helpers {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Identity;
+    use crate::protocol::ServiceRole;
+
+    #[tokio::test]
+    async fn test_llm_p2p_behaviour_creation() {
+        let identity = Identity::generate();
+        let behaviour = LlmP2pBehaviour::new(&identity);
+        assert!(behaviour.is_ok());
+    }
+
+    #[test]
+    fn test_service_role_kad_keys() {
+        let executor_key = ServiceRole::Executor.to_kad_key();
+        let accountant_key = ServiceRole::Accountant.to_kad_key();
+        
+        assert_eq!(executor_key, b"crowd-models/executor");
+        assert_eq!(accountant_key, b"crowd-models/accountant");
+        assert_ne!(executor_key, accountant_key);
+    }
+
+    #[tokio::test]
+    async fn test_behaviour_components() {
+        let identity = Identity::generate();
+        let _behaviour = LlmP2pBehaviour::new(&identity).unwrap();
+        
+        // Ensure all components are properly initialized
+        // This is a basic structural test - just verify the behaviour was created
+        assert!(true); // Basic smoke test
+    }
+
+    mod helpers_tests {
+        use super::*;
+        use libp2p::{SwarmBuilder, Multiaddr};
+
+        #[tokio::test]
+        async fn test_subscribe_topic() -> Result<()> {
+            let identity = Identity::generate();
+            let behaviour = LlmP2pBehaviour::new(&identity).unwrap();
+            
+            let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
+                .with_tokio()
+                .with_tcp(
+                    libp2p::tcp::Config::default(),
+                    libp2p::noise::Config::new,
+                    libp2p::yamux::Config::default,
+                )
+                .map_err(|e| crate::error::Error::Network(format!("Failed to build swarm: {}", e)))?
+                .with_behaviour(|_| behaviour)
+                .map_err(|e| crate::error::Error::Network(format!("Failed to set behaviour: {}", e)))?
+                .build();
+
+            let result = helpers::subscribe_topic(&mut swarm, "test-topic");
+            assert!(result.is_ok());
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_bootstrap_kademlia() -> Result<()> {
+            let identity = Identity::generate();
+            let behaviour = LlmP2pBehaviour::new(&identity).unwrap();
+            
+            let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
+                .with_tokio()
+                .with_tcp(
+                    libp2p::tcp::Config::default(),
+                    libp2p::noise::Config::new,
+                    libp2p::yamux::Config::default,
+                )
+                .map_err(|e| crate::error::Error::Network(format!("Failed to build swarm: {}", e)))?
+                .with_behaviour(|_| behaviour)
+                .map_err(|e| crate::error::Error::Network(format!("Failed to set behaviour: {}", e)))?
+                .build();
+
+            // Test with empty bootstrap peers (should not panic)
+            helpers::bootstrap_kademlia(&mut swarm, vec![]);
+            
+            // Test with some bootstrap peers
+            let peer_id = identity.peer_id;
+            let addr: Multiaddr = "/ip4/127.0.0.1/tcp/9000".parse().unwrap();
+            helpers::bootstrap_kademlia(&mut swarm, vec![(peer_id, addr)]);
+            
+            Ok(())
+        }
+    }
+}

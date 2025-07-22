@@ -35,3 +35,9 @@ config = "0.14"
 directories = "5.0"
 hex = "0.4"
 rand = "0.8"
+
+# Testing dependencies
+tokio-test = "0.4"
+mockall = "0.13"
+wiremock = "0.6"
+tempfile = "3.0"

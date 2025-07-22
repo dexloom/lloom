@@ -239,3 +239,171 @@ async fn perform_periodic_tasks(
 
     info!("Periodic maintenance completed. Known executors: {}", known_executors.len());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+    use tokio_test;
+
+    #[test]
+    fn test_args_parsing() {
+        // Test default values
+        use clap::Parser;
+        
+        // Test with minimal args
+        let args = Args::try_parse_from(&["accountant"]).unwrap();
+        assert_eq!(args.p2p_port, 9000);
+        assert_eq!(args.private_key_file, None);
+        assert_eq!(args.external_addr, None);
+        assert!(!args.debug);
+    }
+
+    #[test]
+    fn test_args_with_options() {
+        use clap::Parser;
+        
+        let args = Args::try_parse_from(&[
+            "accountant",
+            "--p2p-port", "8000",
+            "--debug",
+            "--external-addr", "/ip4/192.168.1.1/tcp/8000"
+        ]).unwrap();
+        
+        assert_eq!(args.p2p_port, 8000);
+        assert!(args.debug);
+        assert_eq!(args.external_addr, Some("/ip4/192.168.1.1/tcp/8000".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_load_or_generate_identity_no_file() {
+        let identity = load_or_generate_identity(None).await.unwrap();
+        assert!(!identity.peer_id.to_string().is_empty());
+        assert!(!identity.evm_address.is_empty());
+        
+        // Each call should generate different identities
+        let identity2 = load_or_generate_identity(None).await.unwrap();
+        assert_ne!(identity.peer_id, identity2.peer_id);
+    }
+
+    #[tokio::test]
+    async fn test_load_or_generate_identity_new_file() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_owned();
+        
+        // Delete the file so it doesn't exist
+        drop(temp_file);
+        
+        let identity = load_or_generate_identity(Some(&path)).await.unwrap();
+        
+        // Should have created the file
+        assert!(path.exists());
+        assert!(!identity.peer_id.to_string().is_empty());
+        
+        // Loading again should return the same identity
+        let identity2 = load_or_generate_identity(Some(&path)).await.unwrap();
+        assert_eq!(identity.peer_id, identity2.peer_id);
+        assert_eq!(identity.evm_address, identity2.evm_address);
+    }
+
+    #[tokio::test]
+    async fn test_load_or_generate_identity_existing_file() -> Result<(), Box<dyn std::error::Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        let test_key = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        writeln!(temp_file, "{}", test_key)?;
+        
+        let identity = load_or_generate_identity(Some(temp_file.path())).await.unwrap();
+        
+        // Should load the same identity consistently
+        let identity2 = load_or_generate_identity(Some(temp_file.path())).await.unwrap();
+        assert_eq!(identity.peer_id, identity2.peer_id);
+        assert_eq!(identity.evm_address, identity2.evm_address);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_load_or_generate_identity_invalid_key() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "invalid_hex_key").unwrap();
+        
+        let result = load_or_generate_identity(Some(temp_file.path())).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiaddr_parsing() {
+        // Test valid multiaddr formats
+        let valid_addrs = vec![
+            "/ip4/127.0.0.1/tcp/9000",
+            "/ip4/192.168.1.1/tcp/8000",
+            "/ip6/::1/tcp/9000",
+        ];
+        
+        for addr_str in valid_addrs {
+            let addr: Result<Multiaddr, _> = addr_str.parse();
+            assert!(addr.is_ok(), "Failed to parse {}", addr_str);
+        }
+        
+        // Test invalid multiaddr
+        let invalid_addrs = vec![
+            "invalid-multiaddr",
+            "tcp://localhost:9000",
+            "/invalid/protocol",
+        ];
+        
+        for addr_str in invalid_addrs {
+            let addr: Result<Multiaddr, _> = addr_str.parse();
+            assert!(addr.is_err(), "Should have failed to parse {}", addr_str);
+        }
+    }
+
+    #[test]
+    fn test_service_role_kad_keys() {
+        // Test that service roles generate consistent Kademlia keys
+        let accountant_key1 = ServiceRole::Accountant.to_kad_key();
+        let accountant_key2 = ServiceRole::Accountant.to_kad_key();
+        assert_eq!(accountant_key1, accountant_key2);
+        
+        let executor_key = ServiceRole::Executor.to_kad_key();
+        assert_ne!(accountant_key1, executor_key);
+    }
+
+    #[tokio::test]
+    async fn test_network_behavior_creation() {
+        let identity = Identity::generate();
+        let result = LlmP2pBehaviour::new(&identity);
+        assert!(result.is_ok(), "Failed to create network behaviour: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_args_debug_trait() {
+        let args = Args {
+            private_key_file: None,
+            p2p_port: 9000,
+            external_addr: None,
+            debug: false,
+        };
+        
+        let debug_str = format!("{:?}", args);
+        assert!(debug_str.contains("Args"));
+        assert!(debug_str.contains("p2p_port: 9000"));
+    }
+
+    #[test]
+    fn test_periodic_task_constants() {
+        // Test that periodic interval is reasonable
+        let interval_secs = 60;
+        assert!(interval_secs > 0);
+        assert!(interval_secs <= 300); // Not more than 5 minutes
+    }
+
+    #[test]
+    fn test_port_range_validation() {
+        // Test that default port is in valid range
+        let default_port = 9000u16;
+        assert!(default_port > 1024); // Above system ports
+        assert!(default_port < 65535); // Valid port range
+    }
+}

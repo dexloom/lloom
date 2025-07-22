@@ -44,3 +44,132 @@ pub enum Error {
 
 /// Convenience type alias for Results using our Error type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::error::Error as StdError;
+
+    #[test]
+    fn test_error_display() {
+        let network_error = Error::Network("Connection failed".to_string());
+        assert_eq!(format!("{}", network_error), "Network error: Connection failed");
+
+        let identity_error = Error::Identity("Invalid key".to_string());
+        assert_eq!(format!("{}", identity_error), "Identity error: Invalid key");
+
+        let protocol_error = Error::Protocol("Malformed message".to_string());
+        assert_eq!(format!("{}", protocol_error), "Protocol error: Malformed message");
+
+        let blockchain_error = Error::Blockchain("Transaction failed".to_string());
+        assert_eq!(format!("{}", blockchain_error), "Blockchain error: Transaction failed");
+
+        let libp2p_error = Error::Libp2p("Peer unreachable".to_string());
+        assert_eq!(format!("{}", libp2p_error), "Libp2p error: Peer unreachable");
+
+        let alloy_error = Error::Alloy("RPC error".to_string());
+        assert_eq!(format!("{}", alloy_error), "Alloy error: RPC error");
+
+        let other_error = Error::Other("Unknown error".to_string());
+        assert_eq!(format!("{}", other_error), "Unknown error");
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let network_error = Error::Network("Connection failed".to_string());
+        let debug_str = format!("{:?}", network_error);
+        assert!(debug_str.contains("Network"));
+        assert!(debug_str.contains("Connection failed"));
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_error = io::Error::new(io::ErrorKind::NotFound, "File not found");
+        let converted: Error = io_error.into();
+        
+        match converted {
+            Error::Io(_) => (),
+            _ => panic!("Expected IO error"),
+        }
+    }
+
+    #[test]
+    fn test_from_serde_json_error() {
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid json");
+        assert!(json_error.is_err());
+        
+        let serde_error = json_error.unwrap_err();
+        let converted: Error = serde_error.into();
+        
+        match converted {
+            Error::Serialization(_) => (),
+            _ => panic!("Expected Serialization error"),
+        }
+    }
+
+    #[test]
+    fn test_error_source() {
+        let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "Access denied");
+        let wrapped_error = Error::Io(io_error);
+        
+        assert!(StdError::source(&wrapped_error).is_some());
+    }
+
+    #[test]
+    fn test_result_type_alias() {
+        fn success_function() -> Result<i32> {
+            Ok(42)
+        }
+        
+        fn error_function() -> Result<i32> {
+            Err(Error::Other("Test error".to_string()))
+        }
+        
+        assert_eq!(success_function().unwrap(), 42);
+        assert!(error_function().is_err());
+    }
+
+    #[test]
+    fn test_error_chain() {
+        let root_cause = io::Error::new(io::ErrorKind::BrokenPipe, "Broken pipe");
+        let wrapped = Error::Io(root_cause);
+        
+        // Test that the error has a source
+        let error_as_std: &dyn StdError = &wrapped;
+        assert!(error_as_std.source().is_some());
+        
+        // Test the error message contains expected text
+        let error_string = wrapped.to_string();
+        assert!(error_string.contains("I/O error"));
+    }
+
+    #[test]
+    fn test_error_variants() {
+        let errors = vec![
+            Error::Network("net".to_string()),
+            Error::Identity("id".to_string()),
+            Error::Protocol("proto".to_string()),
+            Error::Blockchain("chain".to_string()),
+            Error::Libp2p("p2p".to_string()),
+            Error::Alloy("alloy".to_string()),
+            Error::Other("other".to_string()),
+        ];
+        
+        // Ensure each error variant can be created and displayed
+        for error in errors {
+            let error_string = error.to_string();
+            assert!(!error_string.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_send_sync() {
+        // Test that Error implements Send and Sync (compile-time test)
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        
+        assert_send::<Error>();
+        assert_sync::<Error>();
+    }
+}

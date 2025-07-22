@@ -91,3 +91,242 @@ pub mod constants {
     /// Interval for batch submissions (in seconds).
     pub const BATCH_SUBMISSION_INTERVAL: u64 = 300; // 5 minutes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::Address;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn test_llm_request_creation() {
+        let request = LlmRequest {
+            model: "gpt-3.5-turbo".to_string(),
+            prompt: "Hello, world!".to_string(),
+            system_prompt: Some("You are a helpful assistant".to_string()),
+            temperature: Some(0.7),
+            max_tokens: Some(150),
+        };
+
+        assert_eq!(request.model, "gpt-3.5-turbo");
+        assert_eq!(request.prompt, "Hello, world!");
+        assert_eq!(request.system_prompt, Some("You are a helpful assistant".to_string()));
+        assert_eq!(request.temperature, Some(0.7));
+        assert_eq!(request.max_tokens, Some(150));
+    }
+
+    #[test]
+    fn test_llm_request_minimal() {
+        let request = LlmRequest {
+            model: "gpt-4".to_string(),
+            prompt: "Test prompt".to_string(),
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+        };
+
+        assert_eq!(request.model, "gpt-4");
+        assert_eq!(request.prompt, "Test prompt");
+        assert!(request.system_prompt.is_none());
+        assert!(request.temperature.is_none());
+        assert!(request.max_tokens.is_none());
+    }
+
+    #[test]
+    fn test_llm_response_success() {
+        let response = LlmResponse {
+            content: "Generated content".to_string(),
+            token_count: 42,
+            model_used: "gpt-3.5-turbo".to_string(),
+            error: None,
+        };
+
+        assert_eq!(response.content, "Generated content");
+        assert_eq!(response.token_count, 42);
+        assert_eq!(response.model_used, "gpt-3.5-turbo");
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_llm_response_error() {
+        let response = LlmResponse {
+            content: String::new(),
+            token_count: 0,
+            model_used: "gpt-4".to_string(),
+            error: Some("API rate limit exceeded".to_string()),
+        };
+
+        assert!(response.content.is_empty());
+        assert_eq!(response.token_count, 0);
+        assert_eq!(response.error, Some("API rate limit exceeded".to_string()));
+    }
+
+    #[test]
+    fn test_usage_record() {
+        let client_address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse::<Address>().unwrap();
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        
+        let usage_record = UsageRecord {
+            client_address,
+            model: "gpt-4".to_string(),
+            token_count: 100,
+            timestamp,
+        };
+
+        assert_eq!(usage_record.client_address, client_address);
+        assert_eq!(usage_record.model, "gpt-4");
+        assert_eq!(usage_record.token_count, 100);
+        assert_eq!(usage_record.timestamp, timestamp);
+    }
+
+    #[test]
+    fn test_executor_info() {
+        let evm_address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse::<Address>().unwrap();
+        let executor_info = ExecutorInfo {
+            peer_id: "12D3KooWBmwkafWE2fqfzS96VoTZgpGp6aFdD7zdBUyJ1BDdyWz4".to_string(),
+            evm_address,
+            supported_models: vec!["gpt-3.5-turbo".to_string(), "gpt-4".to_string()],
+            is_available: true,
+        };
+
+        assert_eq!(executor_info.peer_id, "12D3KooWBmwkafWE2fqfzS96VoTZgpGp6aFdD7zdBUyJ1BDdyWz4");
+        assert_eq!(executor_info.evm_address, evm_address);
+        assert_eq!(executor_info.supported_models.len(), 2);
+        assert!(executor_info.is_available);
+    }
+
+    #[test]
+    fn test_service_role_to_kad_key() {
+        let executor_key = ServiceRole::Executor.to_kad_key();
+        let accountant_key = ServiceRole::Accountant.to_kad_key();
+
+        assert_eq!(executor_key, b"crowd-models/executor".to_vec());
+        assert_eq!(accountant_key, b"crowd-models/accountant".to_vec());
+        assert_ne!(executor_key, accountant_key);
+    }
+
+    #[test]
+    fn test_service_role_equality() {
+        assert_eq!(ServiceRole::Executor, ServiceRole::Executor);
+        assert_eq!(ServiceRole::Accountant, ServiceRole::Accountant);
+        assert_ne!(ServiceRole::Executor, ServiceRole::Accountant);
+    }
+
+    #[test]
+    fn test_serialization_llm_request() {
+        let request = LlmRequest {
+            model: "gpt-3.5-turbo".to_string(),
+            prompt: "Test".to_string(),
+            system_prompt: Some("System".to_string()),
+            temperature: Some(0.5),
+            max_tokens: Some(100),
+        };
+
+        let serialized = serde_json::to_string(&request).unwrap();
+        let deserialized: LlmRequest = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(request.model, deserialized.model);
+        assert_eq!(request.prompt, deserialized.prompt);
+        assert_eq!(request.system_prompt, deserialized.system_prompt);
+        assert_eq!(request.temperature, deserialized.temperature);
+        assert_eq!(request.max_tokens, deserialized.max_tokens);
+    }
+
+    #[test]
+    fn test_serialization_llm_response() {
+        let response = LlmResponse {
+            content: "Response content".to_string(),
+            token_count: 25,
+            model_used: "gpt-4".to_string(),
+            error: None,
+        };
+
+        let serialized = serde_json::to_string(&response).unwrap();
+        let deserialized: LlmResponse = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(response.content, deserialized.content);
+        assert_eq!(response.token_count, deserialized.token_count);
+        assert_eq!(response.model_used, deserialized.model_used);
+        assert_eq!(response.error, deserialized.error);
+    }
+
+    #[test]
+    fn test_serialization_usage_record() {
+        let client_address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse::<Address>().unwrap();
+        let usage_record = UsageRecord {
+            client_address,
+            model: "gpt-3.5-turbo".to_string(),
+            token_count: 50,
+            timestamp: 1234567890,
+        };
+
+        let serialized = serde_json::to_string(&usage_record).unwrap();
+        let deserialized: UsageRecord = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(usage_record.client_address, deserialized.client_address);
+        assert_eq!(usage_record.model, deserialized.model);
+        assert_eq!(usage_record.token_count, deserialized.token_count);
+        assert_eq!(usage_record.timestamp, deserialized.timestamp);
+    }
+
+    #[test]
+    fn test_serialization_executor_info() {
+        let evm_address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse::<Address>().unwrap();
+        let executor_info = ExecutorInfo {
+            peer_id: "test_peer".to_string(),
+            evm_address,
+            supported_models: vec!["model1".to_string(), "model2".to_string()],
+            is_available: false,
+        };
+
+        let serialized = serde_json::to_string(&executor_info).unwrap();
+        let deserialized: ExecutorInfo = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(executor_info.peer_id, deserialized.peer_id);
+        assert_eq!(executor_info.evm_address, deserialized.evm_address);
+        assert_eq!(executor_info.supported_models, deserialized.supported_models);
+        assert_eq!(executor_info.is_available, deserialized.is_available);
+    }
+
+    #[test]
+    fn test_protocol_constants() {
+        assert_eq!(constants::LLM_PROTOCOL, "/crowd-models/llm/1.0.0");
+        assert_eq!(constants::DEFAULT_REQUEST_TIMEOUT, 300);
+        assert_eq!(constants::MAX_BATCH_SIZE, 100);
+        assert_eq!(constants::BATCH_SUBMISSION_INTERVAL, 300);
+    }
+
+    #[test]
+    fn test_llm_request_clone() {
+        let original = LlmRequest {
+            model: "gpt-4".to_string(),
+            prompt: "Clone test".to_string(),
+            system_prompt: None,
+            temperature: Some(0.8),
+            max_tokens: Some(200),
+        };
+
+        let cloned = original.clone();
+        assert_eq!(original.model, cloned.model);
+        assert_eq!(original.prompt, cloned.prompt);
+        assert_eq!(original.system_prompt, cloned.system_prompt);
+        assert_eq!(original.temperature, cloned.temperature);
+        assert_eq!(original.max_tokens, cloned.max_tokens);
+    }
+
+    #[test]
+    fn test_llm_response_clone() {
+        let original = LlmResponse {
+            content: "Clone test response".to_string(),
+            token_count: 15,
+            model_used: "gpt-3.5-turbo".to_string(),
+            error: Some("Test error".to_string()),
+        };
+
+        let cloned = original.clone();
+        assert_eq!(original.content, cloned.content);
+        assert_eq!(original.token_count, cloned.token_count);
+        assert_eq!(original.model_used, cloned.model_used);
+        assert_eq!(original.error, cloned.error);
+    }
+}

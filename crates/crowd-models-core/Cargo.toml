@@ -31,3 +31,8 @@ tracing.workspace = true
 # Cryptography
 hex.workspace = true
 rand.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+mockall.workspace = true
+tempfile.workspace = true
