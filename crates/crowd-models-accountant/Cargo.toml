@@ -27,3 +27,9 @@ tracing-subscriber.workspace = true
 
 # Utilities
 anyhow.workspace = true
+
+# P2P networking
+libp2p.workspace = true
+
+# Additional dependencies
+hex.workspace = true

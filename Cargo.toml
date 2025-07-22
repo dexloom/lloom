@@ -16,7 +16,7 @@ repository = "https://github.com/crowd-models/crowd-models"
 
 [workspace.dependencies]
 # Core dependencies
-libp2p = { version = "0.56", features = ["tokio", "gossipsub", "mdns", "kad", "request-response", "noise", "yamux", "tcp", "macros"] }
+libp2p = { version = "0.56", features = ["tokio", "gossipsub", "mdns", "kad", "request-response", "noise", "yamux", "tcp", "macros", "secp256k1"] }
 tokio = { version = "1.41", features = ["full"] }
 alloy = { version = "1.0.23", features = ["full", "node-bindings"] }
 serde = { version = "1.0", features = ["derive"] }

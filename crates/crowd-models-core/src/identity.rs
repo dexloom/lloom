@@ -5,7 +5,7 @@
 
 use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
-use libp2p::identity::{Keypair, PeerId};
+use libp2p::identity::{Keypair, PeerId, secp256k1};
 use crate::error::{Error, Result};
 
 /// A unified identity for nodes in the Crowd Models network.
@@ -27,9 +27,18 @@ pub struct Identity {
 impl Identity {
     /// Creates a new identity from a wallet.
     pub fn new(wallet: PrivateKeySigner) -> Result<Self> {
-        // TODO: Implement proper conversion from wallet to libp2p keypair
-        // For now, we'll use a placeholder implementation
-        let p2p_keypair = Keypair::generate_ed25519();
+        // Convert the wallet's private key to libp2p secp256k1 keypair
+        let private_key_bytes = wallet.to_bytes();
+        
+        // Convert FixedBytes to a mutable array
+        let mut key_bytes = private_key_bytes.0;
+        
+        // Create libp2p secp256k1 secret key from the wallet's private key bytes
+        let secret_key = secp256k1::SecretKey::try_from_bytes(&mut key_bytes)
+            .map_err(|e| Error::Identity(format!("Failed to create secp256k1 secret key: {:?}", e)))?;
+        
+        // Create the libp2p keypair
+        let p2p_keypair = Keypair::from(secp256k1::Keypair::from(secret_key));
         let peer_id = p2p_keypair.public().to_peer_id();
         let evm_address = wallet.address();
 

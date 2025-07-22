@@ -57,8 +57,10 @@ pub struct LlmP2pBehaviour {
 }
 
 impl LlmP2pBehaviour {
-    /// Creates a new network behaviour with the given peer ID.
-    pub fn new(peer_id: libp2p::PeerId) -> Result<Self> {
+    /// Creates a new network behaviour with the given identity.
+    pub fn new(identity: &crate::identity::Identity) -> Result<Self> {
+        let peer_id = identity.peer_id;
+        
         // Configure Kademlia
         let mut kad_config = kad::Config::default();
         kad_config.set_query_timeout(Duration::from_secs(60));
@@ -74,7 +76,7 @@ impl LlmP2pBehaviour {
             .map_err(|e| crate::error::Error::Network(format!("Failed to build gossipsub config: {}", e)))?;
             
         let gossipsub = gossipsub::Behaviour::new(
-            MessageAuthenticity::Signed(libp2p::identity::Keypair::generate_ed25519()),
+            MessageAuthenticity::Signed(identity.p2p_keypair.clone()),
             gossipsub_config,
         )
         .map_err(|e| crate::error::Error::Network(format!("Failed to create gossipsub behaviour: {}", e)))?;
