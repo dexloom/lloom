@@ -215,8 +215,15 @@ async fn main() -> Result<()> {
     
     // Register as executor in Kademlia (as provider, not record)
     let executor_key = ServiceRole::Executor.to_kad_key();
-    info!("DEBUG: Registering as executor provider with key: {:?}", executor_key);
-    swarm.behaviour_mut().kademlia.start_providing(executor_key.into())?;
+    info!("DEBUG: Registering as executor provider with key: {:?} (as string: {})",
+          executor_key, String::from_utf8_lossy(&executor_key));
+    info!("DEBUG: My PeerID: {}", identity.peer_id);
+    info!("DEBUG: Supported models: {:?}", config.get_all_supported_models());
+    
+    match swarm.behaviour_mut().kademlia.start_providing(executor_key.into()) {
+        Ok(_) => info!("DEBUG: ✅ Started providing executor service"),
+        Err(e) => error!("DEBUG: ❌ Failed to start providing: {:?}", e),
+    }
     
     // Also put a record for backwards compatibility
     let record = Record {
@@ -225,8 +232,12 @@ async fn main() -> Result<()> {
         publisher: Some(identity.peer_id),
         expires: None,
     };
-    swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One)?;
-    info!("DEBUG: Executor registration completed");
+    match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+        Ok(_) => info!("DEBUG: ✅ Put executor record in DHT"),
+        Err(e) => error!("DEBUG: ❌ Failed to put record: {:?}", e),
+    }
+    
+    info!("DEBUG: ✅ Executor registration completed");
     
     // Initialize blockchain client
     let blockchain_client = match BlockchainClient::new(identity.clone(), config.blockchain.clone()).await {
@@ -383,11 +394,18 @@ async fn handle_llm_request(
     state: &mut ExecutorState,
 ) {
     let model = request.model.clone();
+    info!("DEBUG: 🎯 Received LLM request for model: '{}'", model);
+    info!("DEBUG: Available models: {:?}", state.config.get_all_supported_models());
     
     // Find the appropriate backend for this model
     let backend_name = match state.config.find_backend_for_model(&model) {
-        Some(backend) => backend.name.clone(),
+        Some(backend) => {
+            info!("DEBUG: ✅ Found backend '{}' for model '{}'", backend.name, model);
+            backend.name.clone()
+        }
         None => {
+            error!("DEBUG: ❌ No backend found for model '{}'. Available models: {:?}",
+                   model, state.config.get_all_supported_models());
             let error_response = LlmResponse {
                 content: String::new(),
                 token_count: 0,

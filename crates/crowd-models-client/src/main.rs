@@ -188,24 +188,54 @@ async fn run_client(
     
     // Wait longer for initial connections and DHT to stabilize
     info!("DEBUG: Waiting for DHT to stabilize...");
-    sleep(Duration::from_secs(8)).await;
+    sleep(Duration::from_secs(5)).await;
+    
+    // Bootstrap Kademlia DHT first
+    info!("DEBUG: Bootstrapping Kademlia DHT...");
+    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+        warn!("DEBUG: Failed to bootstrap Kademlia: {:?}", e);
+    }
+    
+    // Wait for bootstrap to complete
+    sleep(Duration::from_secs(3)).await;
     
     // Query for executors multiple times with delays - more attempts with longer intervals
     let executor_key = ServiceRole::Executor.to_kad_key();
-    for attempt in 1..=6 {
-        info!("DEBUG: Attempt {}: Starting provider query for executor key: {:?}", attempt, executor_key);
+    info!("DEBUG: Looking for executors using key: {:?} (as string: {})", executor_key, String::from_utf8_lossy(&executor_key));
+    
+    for attempt in 1..=8 {
+        info!("DEBUG: Attempt {}/8: Starting provider query for executor key", attempt);
         swarm.behaviour_mut().kademlia.get_providers(executor_key.clone().into());
         
         // Also try to get records for backwards compatibility
-        info!("DEBUG: Attempt {}: Starting record query for executor key: {:?}", attempt, executor_key);
+        info!("DEBUG: Attempt {}/8: Starting record query for executor key", attempt);
         swarm.behaviour_mut().kademlia.get_record(executor_key.clone().into());
         
-        if attempt < 6 {
-            sleep(Duration::from_secs(3)).await;
+        // Process events immediately after each query
+        for _ in 0..10 {
+            if let Ok(event) = tokio::time::timeout(Duration::from_millis(100), swarm.select_next_some()).await {
+                handle_swarm_event(swarm, event, state).await;
+                if !state.discovered_executors.is_empty() {
+                    info!("DEBUG: Early discovery success - found {} executors", state.discovered_executors.len());
+                    break;
+                }
+            }
+        }
+        
+        if !state.discovered_executors.is_empty() {
+            break;
+        }
+        
+        if attempt < 8 {
+            info!("DEBUG: Waiting 2 seconds before next attempt...");
+            sleep(Duration::from_secs(2)).await;
         }
     }
     
-    let mut discovery_timeout = tokio::time::interval(Duration::from_secs(25));
+    info!("DEBUG: Completed all discovery attempts, found {} executors so far",
+          state.discovered_executors.len());
+    
+    let mut discovery_timeout = tokio::time::interval(Duration::from_secs(60));
     discovery_timeout.tick().await; // Skip first immediate tick
     
     // Discovery phase
@@ -245,7 +275,14 @@ async fn run_client(
             }
             _ = discovery_timeout.tick() => {
                 if state.discovered_executors.is_empty() {
+                    error!("DEBUG: ❌ DISCOVERY TIMEOUT - No executors found after 60 seconds");
+                    error!("DEBUG: This suggests either:");
+                    error!("DEBUG: 1. No executors are running or registered");
+                    error!("DEBUG: 2. Network connectivity issues prevent discovery");
+                    error!("DEBUG: 3. Executors are not advertising the '{}' model", args.model);
                     return Err(anyhow!("No executors found after discovery timeout"));
+                } else {
+                    info!("DEBUG: Discovery timeout reached but we have {} executors", state.discovered_executors.len());
                 }
             }
         }
@@ -269,12 +306,15 @@ async fn handle_swarm_event(
             result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
             ..
         })) => {
-            info!("DEBUG: Found {} executor providers", providers.len());
+            info!("DEBUG: ✅ Found {} executor providers via Kademlia", providers.len());
             for provider in providers {
                 if state.discovered_executors.insert(provider) {
-                    info!("DEBUG: Discovered executor provider: {}", provider);
+                    info!("DEBUG: ✅ NEW executor discovered: {}", provider);
+                } else {
+                    info!("DEBUG: ⚠️  Already known executor: {}", provider);
                 }
             }
+            info!("DEBUG: Total known executors now: {}", state.discovered_executors.len());
         }
         SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
             result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
