@@ -12,12 +12,12 @@ use crowd_models_core::{
 use futures::StreamExt;
 use libp2p::{
     kad::{self, QueryResult},
-    request_response::{self, RequestId},
+    request_response::{self, OutboundRequestId},
     swarm::SwarmEvent,
     Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     time::Duration,
 };
 use tokio::time::{timeout, sleep};
@@ -67,7 +67,7 @@ struct Args {
 #[derive(Default)]
 struct ClientState {
     discovered_executors: HashSet<PeerId>,
-    pending_request: Option<(RequestId, PeerId)>,
+    pending_request: Option<(OutboundRequestId, PeerId)>,
     response_received: Option<LlmResponse>,
     discovery_complete: bool,
 }
@@ -91,10 +91,10 @@ async fn main() -> Result<()> {
     info!("Prompt: {}", args.prompt);
     
     // Load or generate identity
-    let identity = match args.private_key {
+    let identity = match &args.private_key {
         Some(key) => {
             info!("Loading identity from private key");
-            Identity::from_str(&key)?
+            Identity::from_str(key)?
         }
         None => {
             info!("Generating ephemeral identity");
@@ -220,15 +220,9 @@ async fn run_client(
                     info!("Phase 3: Sending request to executor: {}", selected_executor);
                     
                     // Send the request
-                    match swarm.behaviour_mut().request_response.send_request(&selected_executor, request) {
-                        Ok(request_id) => {
-                            state.pending_request = Some((request_id, selected_executor));
-                            state.discovery_complete = true;
-                        }
-                        Err(e) => {
-                            return Err(anyhow!("Failed to send request: {}", e));
-                        }
-                    }
+                    let request_id = swarm.behaviour_mut().request_response.send_request(&selected_executor, request);
+                    state.pending_request = Some((request_id, selected_executor));
+                    state.discovery_complete = true;
                 }
                 
                 // Check if we received a response
@@ -275,9 +269,10 @@ async fn handle_swarm_event(
             debug!("Kademlia provider query finished");
         }
         SwarmEvent::Behaviour(LlmP2pEvent::RequestResponse(
-            request_response::Event::Message { 
+            request_response::Event::Message {
                 message: request_response::Message::Response { response, request_id },
                 peer,
+                connection_id: _,
             }
         )) => {
             if let Some((pending_id, expected_peer)) = &state.pending_request {
