@@ -1,10 +1,9 @@
 //! Blockchain integration for submitting usage records to the Ethereum smart contract.
 
 use alloy::{
-    contract::ContractInstance,
     primitives::{Address, U256},
-    providers::{Provider, ProviderBuilder},
-    signers::local::PrivateKeySigner,
+    providers::{Provider, ProviderBuilder, RootProvider},
+    network::Ethereum,
     sol,
     transports::http::{Client, Http},
 };
@@ -15,17 +14,50 @@ use std::sync::Arc;
 use tracing::{info, warn, error};
 
 // Generate the contract interface using the sol! macro
-sol!(
+sol! {
     #[allow(missing_docs)]
     #[sol(rpc)]
-    AccountingContract,
-    "../../contracts/Accounting.sol"
-);
+    contract AccountingContract {
+        // Events
+        event UsageRecorded(
+            address indexed executor,
+            address indexed client,
+            string model,
+            uint256 tokenCount,
+            uint256 timestamp
+        );
+
+        // Public state variables (automatically generate getters)
+        function owner() external view returns (address);
+        function totalTokensByExecutor(address) external view returns (uint256);
+        function totalTokensByClient(address) external view returns (uint256);
+        function totalTokensProcessed() external view returns (uint256);
+
+        // Main functions
+        function recordUsage(
+            address client,
+            string calldata model,
+            uint256 tokenCount
+        ) external;
+
+        function getExecutorStats(address executor) external view returns (uint256 totalTokens);
+        function getClientStats(address client) external view returns (uint256 totalTokens);
+        function getNetworkStats() external view returns (uint256 totalTokens);
+        function transferOwnership(address newOwner) external;
+        function hasRecordedUsage(address executor) external view returns (bool hasUsage);
+    }
+}
+
+// Import the generated contract instance type
+use AccountingContract::AccountingContractInstance;
+
+// Type alias for the concrete provider type returned by ProviderBuilder
+type ConcreteProvider = RootProvider<Ethereum>;
 
 /// Blockchain client for interacting with the Accounting smart contract
 pub struct BlockchainClient {
-    provider: Arc<dyn Provider<Http<Client>>>,
-    contract: Option<ContractInstance<Http<Client>, Arc<dyn Provider<Http<Client>>>>>,
+    provider: ConcreteProvider,
+    contract: Option<AccountingContractInstance<ConcreteProvider, Ethereum>>,
     identity: Identity,
     config: BlockchainConfig,
 }
@@ -38,18 +70,17 @@ impl BlockchainClient {
     ) -> Result<Self> {
         // Create the HTTP provider
         let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
             .wallet(identity.wallet.clone())
-            .on_http(config.rpc_url.parse()?);
+            .connect_http(config.rpc_url.parse()?);
         
-        let provider = Arc::new(provider);
+        let provider = provider;
         
         // Create contract instance if address is provided
         let contract = if let Some(contract_addr_str) = &config.contract_address {
             let contract_address: Address = contract_addr_str.parse()
                 .map_err(|e| anyhow!("Invalid contract address: {}", e))?;
             
-            let contract = AccountingContract::new(contract_address, provider.clone());
+            let contract = AccountingContract::new(contract_address, &provider);
             Some(contract)
         } else {
             None
@@ -65,7 +96,7 @@ impl BlockchainClient {
     
     /// Set the contract address after deployment
     pub fn set_contract_address(&mut self, contract_address: Address) {
-        let contract = AccountingContract::new(contract_address, self.provider.clone());
+        let contract = AccountingContract::new(contract_address, &self.provider);
         self.contract = Some(contract);
     }
     
@@ -108,7 +139,7 @@ impl BlockchainClient {
     /// Submit a single chunk of records
     async fn submit_chunk(
         &self,
-        contract: &ContractInstance<Http<Client>, Arc<dyn Provider<Http<Client>>>>,
+        contract: &AccountingContractInstance<ConcreteProvider, Ethereum>,
         records: &[UsageRecord],
     ) -> Result<()> {
         // For now, submit one record at a time
@@ -133,7 +164,7 @@ impl BlockchainClient {
     /// Submit a single usage record
     async fn submit_single_record(
         &self,
-        contract: &ContractInstance<Http<Client>, Arc<dyn Provider<Http<Client>>>>,
+        contract: &AccountingContractInstance<ConcreteProvider, Ethereum>,
         record: &UsageRecord,
     ) -> Result<String> {
         let call = contract.recordUsage(
@@ -143,9 +174,9 @@ impl BlockchainClient {
         );
         
         // Estimate gas and adjust gas price
-        let mut call = call.gas_price(
-            (self.provider.get_gas_price().await? * U256::from((self.config.gas_price_multiplier * 100.0) as u64)) / U256::from(100)
-        );
+        let gas_price = self.provider.get_gas_price().await?;
+        let adjusted_gas_price = gas_price * (self.config.gas_price_multiplier * 100.0) as u128 / 100;
+        let mut call = call.gas_price(adjusted_gas_price);
         
         // Send the transaction
         let pending_tx = call.send().await?;
@@ -182,8 +213,8 @@ impl BlockchainClient {
         let contract = self.contract.as_ref()
             .ok_or_else(|| anyhow!("Contract address not set"))?;
         
-        let stats = contract.getExecutorStats(self.identity.evm_address).call().await?;
-        Ok(stats.totalTokens.to::<u64>())
+        let total_tokens = contract.getExecutorStats(self.identity.evm_address).call().await?;
+        Ok(total_tokens.to::<u64>())
     }
     
     /// Check if the blockchain connection is working
@@ -194,9 +225,9 @@ impl BlockchainClient {
         
         // If contract is set, try to call a view function
         if let Some(contract) = &self.contract {
-            let network_stats = contract.getNetworkStats().call().await?;
-            info!("Contract health check passed: total network tokens {}", 
-                  network_stats.totalTokens);
+            let total_tokens = contract.getNetworkStats().call().await?;
+            info!("Contract health check passed: total network tokens {}",
+                  total_tokens);
         }
         
         Ok(())
