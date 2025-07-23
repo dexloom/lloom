@@ -8,7 +8,7 @@ mod blockchain;
 
 use anyhow::Result;
 use clap::Parser;
-use config::{ExecutorConfig, LlmBackendConfig};
+use config::ExecutorConfig;
 use crowd_models_core::{
     identity::Identity,
     network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
@@ -25,13 +25,12 @@ use llm_client::LlmClient;
 use blockchain::BlockchainClient;
 use std::{
     collections::HashMap,
-    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     signal,
     sync::mpsc,
-    time::{interval, Interval},
+    time::interval,
 };
 use tracing::{debug, error, info, warn};
 
@@ -77,7 +76,8 @@ struct ExecutorState {
     config: ExecutorConfig,
     llm_clients: HashMap<String, LlmClient>,
     usage_records: Vec<UsageRecord>,
-    pending_requests: HashMap<request_response::RequestId, ResponseChannel<LlmResponse>>,
+    #[allow(dead_code)]
+    pending_requests: HashMap<request_response::OutboundRequestId, ResponseChannel<LlmResponse>>,
     blockchain_client: Option<BlockchainClient>,
 }
 
@@ -337,7 +337,7 @@ async fn handle_llm_request(
     _swarm: &mut Swarm<LlmP2pBehaviour>,
     request: LlmRequest,
     channel: ResponseChannel<LlmResponse>,
-    client_peer: libp2p::PeerId,
+    _client_peer: libp2p::PeerId,
     state: &mut ExecutorState,
 ) {
     let model = request.model.clone();

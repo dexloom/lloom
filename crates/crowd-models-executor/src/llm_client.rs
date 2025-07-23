@@ -34,12 +34,15 @@ pub struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 pub struct Choice {
     pub message: ChatMessage,
+    #[allow(dead_code)]
     pub finish_reason: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Usage {
+    #[allow(dead_code)]
     pub prompt_tokens: u32,
+    #[allow(dead_code)]
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
@@ -141,8 +144,9 @@ impl LlmClient {
 }
 
 /// Count tokens in text using tiktoken
+#[allow(dead_code)]
 pub fn count_tokens(text: &str, model: &str) -> Result<usize> {
-    use tiktoken_rs::{get_bpe_from_model, CoreBPE};
+    use tiktoken_rs::get_bpe_from_model;
     
     // Map model names to tiktoken model names
     let tiktoken_model = match model {

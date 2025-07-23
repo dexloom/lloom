@@ -1,7 +1,6 @@
 //! Configuration management for the Executor node.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use anyhow::Result;
 
 /// Configuration for the Executor node

@@ -3,14 +3,11 @@
 use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
-    network::Ethereum,
     sol,
-    transports::http::{Client, Http},
 };
 use anyhow::{Result, anyhow};
 use crate::config::BlockchainConfig;
 use crowd_models_core::{identity::Identity, protocol::UsageRecord};
-use std::sync::Arc;
 use tracing::{info, warn, error};
 
 // Generate the contract interface using the sol! macro
@@ -51,13 +48,29 @@ sol! {
 // Import the generated contract instance type
 use AccountingContract::AccountingContractInstance;
 
-// Type alias for the concrete provider type returned by ProviderBuilder
-type ConcreteProvider = RootProvider<Ethereum>;
+// Use the actual provider type returned by ProviderBuilder
+type ConcreteProvider = alloy::providers::fillers::FillProvider<
+    alloy::providers::fillers::JoinFill<
+        alloy::providers::Identity,
+        alloy::providers::fillers::JoinFill<
+            alloy::providers::fillers::GasFiller,
+            alloy::providers::fillers::JoinFill<
+                alloy::providers::fillers::BlobGasFiller,
+                alloy::providers::fillers::JoinFill<
+                    alloy::providers::fillers::NonceFiller,
+                    alloy::providers::fillers::ChainIdFiller,
+                >,
+            >,
+        >,
+    >,
+    RootProvider,
+>;
 
 /// Blockchain client for interacting with the Accounting smart contract
 pub struct BlockchainClient {
     provider: ConcreteProvider,
-    contract: Option<AccountingContractInstance<ConcreteProvider, Ethereum>>,
+    contract: Option<AccountingContractInstance<ConcreteProvider>>,
+    #[allow(dead_code)]
     identity: Identity,
     config: BlockchainConfig,
 }
@@ -70,17 +83,14 @@ impl BlockchainClient {
     ) -> Result<Self> {
         // Create the HTTP provider
         let provider = ProviderBuilder::new()
-            .wallet(identity.wallet.clone())
             .connect_http(config.rpc_url.parse()?);
-        
-        let provider = provider;
         
         // Create contract instance if address is provided
         let contract = if let Some(contract_addr_str) = &config.contract_address {
             let contract_address: Address = contract_addr_str.parse()
                 .map_err(|e| anyhow!("Invalid contract address: {}", e))?;
             
-            let contract = AccountingContract::new(contract_address, &provider);
+            let contract = AccountingContract::new(contract_address, provider.clone());
             Some(contract)
         } else {
             None
@@ -95,8 +105,9 @@ impl BlockchainClient {
     }
     
     /// Set the contract address after deployment
+    #[allow(dead_code)]
     pub fn set_contract_address(&mut self, contract_address: Address) {
-        let contract = AccountingContract::new(contract_address, &self.provider);
+        let contract = AccountingContract::new(contract_address, self.provider.clone());
         self.contract = Some(contract);
     }
     
@@ -139,7 +150,7 @@ impl BlockchainClient {
     /// Submit a single chunk of records
     async fn submit_chunk(
         &self,
-        contract: &AccountingContractInstance<ConcreteProvider, Ethereum>,
+        contract: &AccountingContractInstance<ConcreteProvider>,
         records: &[UsageRecord],
     ) -> Result<()> {
         // For now, submit one record at a time
@@ -164,7 +175,7 @@ impl BlockchainClient {
     /// Submit a single usage record
     async fn submit_single_record(
         &self,
-        contract: &AccountingContractInstance<ConcreteProvider, Ethereum>,
+        contract: &AccountingContractInstance<ConcreteProvider>,
         record: &UsageRecord,
     ) -> Result<String> {
         let call = contract.recordUsage(
@@ -176,7 +187,7 @@ impl BlockchainClient {
         // Estimate gas and adjust gas price
         let gas_price = self.provider.get_gas_price().await?;
         let adjusted_gas_price = gas_price * (self.config.gas_price_multiplier * 100.0) as u128 / 100;
-        let mut call = call.gas_price(adjusted_gas_price);
+        let call = call.gas_price(adjusted_gas_price);
         
         // Send the transaction
         let pending_tx = call.send().await?;
@@ -209,6 +220,7 @@ impl BlockchainClient {
     }
     
     /// Get executor statistics from the contract
+    #[allow(dead_code)]
     pub async fn get_executor_stats(&self) -> Result<u64> {
         let contract = self.contract.as_ref()
             .ok_or_else(|| anyhow!("Contract address not set"))?;
