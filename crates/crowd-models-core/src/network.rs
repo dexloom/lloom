@@ -61,12 +61,15 @@ impl LlmP2pBehaviour {
     pub fn new(identity: &crate::identity::Identity) -> Result<Self> {
         let peer_id = identity.peer_id;
         
-        // Configure Kademlia
+        // Configure Kademlia with server mode enabled
         let mut kad_config = kad::Config::default();
         kad_config.set_query_timeout(Duration::from_secs(60));
         
         let store = MemoryStore::new(peer_id);
-        let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
+        let mut kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
+        
+        // Enable server mode to handle incoming DHT queries
+        kademlia.set_mode(Some(kad::Mode::Server));
         
         // Configure Gossipsub
         let gossipsub_config = gossipsub::ConfigBuilder::default()

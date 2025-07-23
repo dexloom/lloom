@@ -135,14 +135,15 @@ async fn main() -> Result<()> {
     // Connect to bootstrap nodes
     for addr in &bootstrap_addrs {
         if let Err(e) = swarm.dial(addr.clone()) {
-            warn!("Failed to dial bootstrap node {}: {}", addr, e);
+            warn!("DEBUG: Failed to dial bootstrap node {}: {}", addr, e);
         } else {
-            info!("Dialing bootstrap node: {}", addr);
+            info!("DEBUG: Successfully initiated dial to bootstrap node: {}", addr);
         }
     }
     
     // Subscribe to gossipsub topics
     helpers::subscribe_topic(&mut swarm, "crowd-models/announcements")?;
+    helpers::subscribe_topic(&mut swarm, "crowd-models/executor-announcements")?;
     
     let mut client_state = ClientState::default();
     
@@ -185,14 +186,26 @@ async fn run_client(
 ) -> Result<LlmResponse> {
     info!("Phase 1: Discovering executors...");
     
-    // Wait for initial connections
-    sleep(Duration::from_secs(2)).await;
+    // Wait longer for initial connections and DHT to stabilize
+    info!("DEBUG: Waiting for DHT to stabilize...");
+    sleep(Duration::from_secs(8)).await;
     
-    // Query for executors
+    // Query for executors multiple times with delays - more attempts with longer intervals
     let executor_key = ServiceRole::Executor.to_kad_key();
-    swarm.behaviour_mut().kademlia.get_providers(executor_key.into());
+    for attempt in 1..=6 {
+        info!("DEBUG: Attempt {}: Starting provider query for executor key: {:?}", attempt, executor_key);
+        swarm.behaviour_mut().kademlia.get_providers(executor_key.clone().into());
+        
+        // Also try to get records for backwards compatibility
+        info!("DEBUG: Attempt {}: Starting record query for executor key: {:?}", attempt, executor_key);
+        swarm.behaviour_mut().kademlia.get_record(executor_key.clone().into());
+        
+        if attempt < 6 {
+            sleep(Duration::from_secs(3)).await;
+        }
+    }
     
-    let mut discovery_timeout = tokio::time::interval(Duration::from_secs(10));
+    let mut discovery_timeout = tokio::time::interval(Duration::from_secs(25));
     discovery_timeout.tick().await; // Skip first immediate tick
     
     // Discovery phase
@@ -247,7 +260,7 @@ async fn handle_swarm_event(
 ) {
     match event {
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-            info!("Connected to peer: {}", peer_id);
+            info!("DEBUG: Connected to peer: {}", peer_id);
         }
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
@@ -256,9 +269,22 @@ async fn handle_swarm_event(
             result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
             ..
         })) => {
+            info!("DEBUG: Found {} executor providers", providers.len());
             for provider in providers {
                 if state.discovered_executors.insert(provider) {
-                    info!("Discovered executor: {}", provider);
+                    info!("DEBUG: Discovered executor provider: {}", provider);
+                }
+            }
+        }
+        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+            result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
+            ..
+        })) => {
+            if record.record.key.as_ref() == ServiceRole::Executor.to_kad_key() {
+                if let Ok(peer_id) = libp2p::PeerId::from_bytes(&record.record.value) {
+                    if state.discovered_executors.insert(peer_id) {
+                        info!("DEBUG: Discovered executor from record: {}", peer_id);
+                    }
                 }
             }
         }
@@ -297,6 +323,19 @@ async fn handle_swarm_event(
         }
         SwarmEvent::Behaviour(LlmP2pEvent::Gossipsub(libp2p::gossipsub::Event::Message { message, .. })) => {
             debug!("Received gossipsub message on topic {:?}", message.topic);
+            
+            // Handle executor announcements
+            if message.topic.as_str() == "crowd-models/executor-announcements" {
+                if let Ok(msg_str) = std::str::from_utf8(&message.data) {
+                    if let Some(peer_id_str) = msg_str.strip_prefix("EXECUTOR_AVAILABLE:") {
+                        if let Ok(peer_id) = peer_id_str.parse::<PeerId>() {
+                            if state.discovered_executors.insert(peer_id) {
+                                info!("DEBUG: Discovered executor via gossipsub: {}", peer_id);
+                            }
+                        }
+                    }
+                }
+            }
         }
         _ => {}
     }

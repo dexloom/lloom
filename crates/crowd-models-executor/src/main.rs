@@ -185,34 +185,48 @@ async fn main() -> Result<()> {
     
     // Bootstrap with known nodes
     if !config.network.bootstrap_nodes.is_empty() {
-        let bootstrap_peers: Result<Vec<_>> = config.network.bootstrap_nodes
-            .iter()
-            .map(|addr_str| -> Result<(libp2p::PeerId, Multiaddr)> {
-                let addr: Multiaddr = addr_str.parse()?;
-                // Extract peer ID from multiaddr if present, or use a dummy one for now
-                // In a real implementation, you'd need the actual peer IDs
-                Ok((identity.peer_id, addr))
-            })
-            .collect();
-            
-        if let Ok(peers) = bootstrap_peers {
-            helpers::bootstrap_kademlia(&mut swarm, peers);
+        info!("DEBUG: Attempting to bootstrap with {} nodes", config.network.bootstrap_nodes.len());
+        for addr_str in &config.network.bootstrap_nodes {
+            match addr_str.parse::<Multiaddr>() {
+                Ok(addr) => {
+                    info!("DEBUG: Attempting to dial bootstrap node: {}", addr);
+                    if let Err(e) = swarm.dial(addr.clone()) {
+                        warn!("DEBUG: Failed to dial bootstrap node {}: {}", addr, e);
+                    } else {
+                        info!("DEBUG: Successfully initiated dial to bootstrap node: {}", addr);
+                    }
+                }
+                Err(e) => {
+                    warn!("DEBUG: Invalid bootstrap address '{}': {}", addr_str, e);
+                }
+            }
         }
     }
     
     // Subscribe to gossipsub topics
     helpers::subscribe_topic(&mut swarm, "crowd-models/announcements")?;
     helpers::subscribe_topic(&mut swarm, "crowd-models/executor-updates")?;
+    helpers::subscribe_topic(&mut swarm, "crowd-models/executor-announcements")?;
     
-    // Register as executor in Kademlia
+    info!("DEBUG: Waiting for network stabilization before registering...");
+    
+    // Wait a bit for connections to stabilize
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    
+    // Register as executor in Kademlia (as provider, not record)
     let executor_key = ServiceRole::Executor.to_kad_key();
+    info!("DEBUG: Registering as executor provider with key: {:?}", executor_key);
+    swarm.behaviour_mut().kademlia.start_providing(executor_key.into())?;
+    
+    // Also put a record for backwards compatibility
     let record = Record {
-        key: executor_key.clone().into(),
+        key: ServiceRole::Executor.to_kad_key().into(),
         value: identity.peer_id.to_bytes(),
         publisher: Some(identity.peer_id),
         expires: None,
     };
     swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One)?;
+    info!("DEBUG: Executor registration completed");
     
     // Initialize blockchain client
     let blockchain_client = match BlockchainClient::new(identity.clone(), config.blockchain.clone()).await {
@@ -298,7 +312,9 @@ async fn handle_swarm_event(
             info!("Listening on {}", address);
         }
         SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-            debug!("Connection established with {} at {}", peer_id, endpoint.get_remote_address());
+            info!("DEBUG: Connection established with {} at {}", peer_id, endpoint.get_remote_address());
+            // Add the connected peer to Kademlia for mutual bootstrap
+            swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
         }
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
@@ -316,11 +332,37 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-            result,
-            ..
-        })) => {
-            debug!("Kademlia query result: {:?}", result);
+        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad_event)) => {
+            match kad_event {
+                kad::Event::OutboundQueryProgressed { result, .. } => {
+                    match result {
+                        kad::QueryResult::StartProviding(Ok(kad::AddProviderOk { key })) => {
+                            info!("DEBUG: Successfully started providing for key: {:?}", key);
+                        }
+                        kad::QueryResult::StartProviding(Err(e)) => {
+                            error!("DEBUG: Failed to start providing: {:?}", e);
+                        }
+                        kad::QueryResult::PutRecord(Ok(kad::PutRecordOk { key })) => {
+                            info!("DEBUG: Successfully put record for key: {:?}", key);
+                        }
+                        kad::QueryResult::PutRecord(Err(e)) => {
+                            error!("DEBUG: Failed to put record: {:?}", e);
+                        }
+                        _ => {
+                            debug!("DEBUG: Other Kademlia query result: {:?}", result);
+                        }
+                    }
+                }
+                kad::Event::InboundRequest { request } => {
+                    info!("DEBUG: Received inbound Kademlia request: {:?}", request);
+                }
+                kad::Event::RoutingUpdated { peer, .. } => {
+                    info!("DEBUG: Kademlia routing updated with peer: {}", peer);
+                }
+                _ => {
+                    debug!("DEBUG: Other Kademlia event: {:?}", kad_event);
+                }
+            }
         }
         SwarmEvent::Behaviour(LlmP2pEvent::Gossipsub(libp2p::gossipsub::Event::Message {
             message,
@@ -447,6 +489,16 @@ async fn announce_executor(
         warn!("Failed to announce executor: {:?}", e);
     } else {
         debug!("Announced executor availability");
+    }
+    
+    // Also announce via gossipsub for better discovery in small networks
+    let announcement_msg = format!("EXECUTOR_AVAILABLE:{}", state.identity.peer_id);
+    let topic = libp2p::gossipsub::IdentTopic::new("crowd-models/executor-announcements");
+    
+    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, announcement_msg.as_bytes()) {
+        warn!("Failed to publish executor announcement via gossipsub: {:?}", e);
+    } else {
+        info!("DEBUG: Published executor announcement via gossipsub: {}", state.identity.peer_id);
     }
 }
 

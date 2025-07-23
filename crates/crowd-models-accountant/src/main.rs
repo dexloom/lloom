@@ -100,6 +100,7 @@ async fn main() -> Result<()> {
 
     // Register as an accountant in Kademlia
     let accountant_key = ServiceRole::Accountant.to_kad_key();
+    info!("DEBUG: Registering accountant with key: {:?}", accountant_key);
     let record = Record {
         key: accountant_key.clone().into(),
         value: identity.peer_id.to_bytes(),
@@ -107,6 +108,7 @@ async fn main() -> Result<()> {
         expires: None,
     };
     swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One)?;
+    info!("DEBUG: Accountant registration completed");
 
     info!("Accountant node started successfully");
 
@@ -167,7 +169,7 @@ async fn load_or_generate_identity(key_file: Option<&std::path::Path>) -> Result
 
 /// Handle swarm events
 async fn handle_swarm_event(
-    _swarm: &mut Swarm<LlmP2pBehaviour>,
+    swarm: &mut Swarm<LlmP2pBehaviour>,
     event: SwarmEvent<LlmP2pEvent>,
     known_executors: &mut HashSet<libp2p::PeerId>,
 ) {
@@ -176,7 +178,9 @@ async fn handle_swarm_event(
             info!("Listening on {}", address);
         }
         SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-            debug!("Connection established with {} at {}", peer_id, endpoint.get_remote_address());
+            info!("DEBUG: Accountant connection established with {} at {}", peer_id, endpoint.get_remote_address());
+            // Add the connected peer to Kademlia for mutual bootstrap
+            swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
         }
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
