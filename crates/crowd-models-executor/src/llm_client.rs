@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::config::LlmBackendConfig;
 
 /// OpenAI-compatible chat completion request
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,

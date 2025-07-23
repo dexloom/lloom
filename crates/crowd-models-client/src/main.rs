@@ -241,7 +241,7 @@ async fn run_client(
 
 /// Handle swarm events
 async fn handle_swarm_event(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
+    _swarm: &mut Swarm<LlmP2pBehaviour>,
     event: SwarmEvent<LlmP2pEvent>,
     state: &mut ClientState,
 ) {
@@ -308,7 +308,6 @@ mod tests {
     use clap::Parser;
     use crowd_models_core::protocol::{LlmRequest, LlmResponse};
     use libp2p::PeerId;
-    use std::collections::HashSet;
 
     #[test]
     fn test_args_parsing() {
@@ -397,10 +396,8 @@ mod tests {
         assert!(state.discovered_executors.contains(&peer1));
         assert!(state.discovered_executors.contains(&peer2));
         
-        // Set pending request
-        let request_id = libp2p::request_response::RequestId::new();
-        state.pending_request = Some((request_id, peer1));
-        assert!(state.pending_request.is_some());
+        // Note: OutboundRequestId doesn't have a public constructor, so we skip that part of the test
+        // In real usage, it's returned by send_request()
         
         // Set response
         let response = LlmResponse {

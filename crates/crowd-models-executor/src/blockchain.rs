@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_invalid_contract_address() {
-        let identity = Identity::generate();
+        let _identity = Identity::generate();
         let config = BlockchainConfig {
             rpc_url: "https://rpc.sepolia.org".to_string(),
             contract_address: Some("invalid_address".to_string()),

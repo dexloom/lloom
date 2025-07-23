@@ -245,7 +245,6 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
     use std::io::Write;
-    use tokio_test;
 
     #[test]
     fn test_args_parsing() {

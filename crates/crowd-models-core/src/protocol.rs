@@ -22,7 +22,7 @@ pub struct LlmRequest {
 }
 
 /// A response sent from an Executor to a Client.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LlmResponse {
     /// The generated content from the model.
     pub content: String,
