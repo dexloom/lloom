@@ -21,6 +21,21 @@ pub enum Error {
     #[error("Blockchain error: {0}")]
     Blockchain(String),
     
+    /// Signature-related errors
+    #[error("Signature error: {0}")]
+    Signature(String),
+    
+    /// Verification-related errors
+    #[error("Verification error: {0}")]
+    Verification(String),
+    
+    /// Invalid signer error
+    #[error("Invalid signer: expected {expected}, but recovered {recovered}")]
+    InvalidSigner {
+        expected: alloy::primitives::Address,
+        recovered: alloy::primitives::Address,
+    },
+    
     /// Generic I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -151,6 +166,12 @@ mod tests {
             Error::Identity("id".to_string()),
             Error::Protocol("proto".to_string()),
             Error::Blockchain("chain".to_string()),
+            Error::Signature("sig".to_string()),
+            Error::Verification("verify".to_string()),
+            Error::InvalidSigner {
+                expected: "0x0000000000000000000000000000000000000001".parse().unwrap(),
+                recovered: "0x0000000000000000000000000000000000000002".parse().unwrap(),
+            },
             Error::Libp2p("p2p".to_string()),
             Error::Alloy("alloy".to_string()),
             Error::Other("other".to_string()),
@@ -171,5 +192,30 @@ mod tests {
         
         assert_send::<Error>();
         assert_sync::<Error>();
+    }
+
+    #[test]
+    fn test_signature_error() {
+        let signature_error = Error::Signature("Failed to sign message".to_string());
+        assert_eq!(format!("{}", signature_error), "Signature error: Failed to sign message");
+    }
+
+    #[test]
+    fn test_verification_error() {
+        let verification_error = Error::Verification("Invalid signature".to_string());
+        assert_eq!(format!("{}", verification_error), "Verification error: Invalid signature");
+    }
+
+    #[test]
+    fn test_invalid_signer_error() {
+        let expected: alloy::primitives::Address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap();
+        let recovered: alloy::primitives::Address = "0x123456789abcdef0123456789abcdef012345678".parse().unwrap();
+        
+        let invalid_signer_error = Error::InvalidSigner { expected, recovered };
+        let error_string = format!("{}", invalid_signer_error);
+        
+        assert!(error_string.contains("Invalid signer"));
+        assert!(error_string.contains(&format!("{}", expected)));
+        assert!(error_string.contains(&format!("{}", recovered)));
     }
 }

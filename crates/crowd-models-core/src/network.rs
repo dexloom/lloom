@@ -12,20 +12,20 @@ use libp2p::{
 };
 use std::time::Duration;
 
-use crate::protocol::{LlmRequest, LlmResponse, constants::LLM_PROTOCOL};
+use crate::protocol::{RequestMessage, ResponseMessage, constants::LLM_PROTOCOL};
 use crate::error::Result;
 
 /// The custom event type that the behaviour will emit to the Swarm owner.
 #[derive(Debug)]
 pub enum LlmP2pEvent {
-    RequestResponse(request_response::Event<LlmRequest, LlmResponse>),
+    RequestResponse(request_response::Event<RequestMessage, ResponseMessage>),
     Kademlia(kad::Event),
     Gossipsub(gossipsub::Event),
 }
 
 // Implement From<T> for LlmP2pEvent for each inner event type
-impl From<request_response::Event<LlmRequest, LlmResponse>> for LlmP2pEvent {
-    fn from(event: request_response::Event<LlmRequest, LlmResponse>) -> Self {
+impl From<request_response::Event<RequestMessage, ResponseMessage>> for LlmP2pEvent {
+    fn from(event: request_response::Event<RequestMessage, ResponseMessage>) -> Self {
         LlmP2pEvent::RequestResponse(event)
     }
 }
@@ -53,7 +53,7 @@ pub struct LlmP2pBehaviour {
     pub gossipsub: gossipsub::Behaviour,
     
     /// A custom request-response protocol for direct LLM queries.
-    pub request_response: request_response::cbor::Behaviour<LlmRequest, LlmResponse>,
+    pub request_response: request_response::cbor::Behaviour<RequestMessage, ResponseMessage>,
 }
 
 impl LlmP2pBehaviour {

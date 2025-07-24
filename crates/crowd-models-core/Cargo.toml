@@ -31,6 +31,7 @@ tracing.workspace = true
 # Cryptography
 hex.workspace = true
 rand.workspace = true
+k256 = { version = "0.13", features = ["ecdsa"] }
 
 [dev-dependencies]
 tokio-test.workspace = true

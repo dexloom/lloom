@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use alloy::primitives::Address;
+use crate::signing::{SignedMessage, SignableMessage};
 
 /// A request sent from a Client to an Executor.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -85,11 +86,42 @@ pub mod constants {
     /// Default timeout for LLM requests (in seconds).
     pub const DEFAULT_REQUEST_TIMEOUT: u64 = 300; // 5 minutes
     
+    /// Maximum age for signed messages (in seconds) - 5 minutes for replay protection.
+    pub const MAX_MESSAGE_AGE_SECS: u64 = 300;
+    
     /// Maximum batch size for blockchain submissions.
     pub const MAX_BATCH_SIZE: usize = 100;
     
     /// Interval for batch submissions (in seconds).
     pub const BATCH_SUBMISSION_INTERVAL: u64 = 300; // 5 minutes
+}
+
+// Implement SignableMessage for protocol messages
+impl SignableMessage for LlmRequest {}
+impl SignableMessage for LlmResponse {}
+impl SignableMessage for UsageRecord {}
+
+/// Type aliases for commonly used signed messages
+pub type SignedLlmRequest = SignedMessage<LlmRequest>;
+pub type SignedLlmResponse = SignedMessage<LlmResponse>;
+pub type SignedUsageRecord = SignedMessage<UsageRecord>;
+
+/// Wrapper enum for request messages to support both signed and unsigned variants
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum RequestMessage {
+    /// Unsigned LLM request (for backwards compatibility)
+    LlmRequest(LlmRequest),
+    /// Signed LLM request (with cryptographic signature)
+    SignedLlmRequest(SignedLlmRequest),
+}
+
+/// Wrapper enum for response messages to support both signed and unsigned variants
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ResponseMessage {
+    /// Unsigned LLM response (for backwards compatibility)
+    LlmResponse(LlmResponse),
+    /// Signed LLM response (with cryptographic signature)
+    SignedLlmResponse(SignedLlmResponse),
 }
 
 #[cfg(test)]
@@ -328,5 +360,151 @@ mod tests {
         assert_eq!(original.token_count, cloned.token_count);
         assert_eq!(original.model_used, cloned.model_used);
         assert_eq!(original.error, cloned.error);
+    }
+
+    #[tokio::test]
+    async fn test_signed_llm_request() {
+        use crate::signing::SignableMessage;
+        use alloy::signers::local::PrivateKeySigner;
+
+        let signer: PrivateKeySigner = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .expect("Valid private key");
+
+        let request = LlmRequest {
+            model: "gpt-4".to_string(),
+            prompt: "Test signing".to_string(),
+            system_prompt: None,
+            temperature: Some(0.5),
+            max_tokens: Some(100),
+        };
+
+        let signed_request = request.sign_blocking(&signer).unwrap();
+        
+        assert_eq!(signed_request.payload.model, "gpt-4");
+        assert_eq!(signed_request.payload.prompt, "Test signing");
+        assert_eq!(signed_request.signer, signer.address());
+        assert!(signed_request.signature.len() == 65);
+    }
+
+    #[tokio::test]
+    async fn test_signed_llm_response() {
+        use crate::signing::SignableMessage;
+        use alloy::signers::local::PrivateKeySigner;
+
+        let signer: PrivateKeySigner = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .expect("Valid private key");
+
+        let response = LlmResponse {
+            content: "Test response".to_string(),
+            token_count: 10,
+            model_used: "gpt-4".to_string(),
+            error: None,
+        };
+
+        let signed_response = response.sign_blocking(&signer).unwrap();
+        
+        assert_eq!(signed_response.payload.content, "Test response");
+        assert_eq!(signed_response.payload.token_count, 10);
+        assert_eq!(signed_response.signer, signer.address());
+        assert!(signed_response.signature.len() == 65);
+    }
+
+    #[tokio::test]
+    async fn test_signed_usage_record() {
+        use crate::signing::SignableMessage;
+        use alloy::signers::local::PrivateKeySigner;
+
+        let signer: PrivateKeySigner = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .expect("Valid private key");
+
+        let client_address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse::<Address>().unwrap();
+        let usage_record = UsageRecord {
+            client_address,
+            model: "gpt-3.5-turbo".to_string(),
+            token_count: 50,
+            timestamp: 1234567890,
+        };
+
+        let signed_usage_record = usage_record.sign_blocking(&signer).unwrap();
+        
+        assert_eq!(signed_usage_record.payload.client_address, client_address);
+        assert_eq!(signed_usage_record.payload.model, "gpt-3.5-turbo");
+        assert_eq!(signed_usage_record.payload.token_count, 50);
+        assert_eq!(signed_usage_record.signer, signer.address());
+        assert!(signed_usage_record.signature.len() == 65);
+    }
+
+    #[tokio::test]
+    async fn test_signed_message_type_aliases() {
+        use crate::signing::SignableMessage;
+        use alloy::signers::local::PrivateKeySigner;
+
+        let signer: PrivateKeySigner = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .expect("Valid private key");
+
+        let request = LlmRequest {
+            model: "gpt-4".to_string(),
+            prompt: "Type alias test".to_string(),
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+        };
+
+        // Test that the type alias works
+        let signed_request: SignedLlmRequest = request.sign_blocking(&signer).unwrap();
+        assert_eq!(signed_request.payload.prompt, "Type alias test");
+
+        let response = LlmResponse {
+            content: "Response content".to_string(),
+            token_count: 15,
+            model_used: "gpt-4".to_string(),
+            error: None,
+        };
+
+        let signed_response: SignedLlmResponse = response.sign_blocking(&signer).unwrap();
+        assert_eq!(signed_response.payload.content, "Response content");
+
+        let client_address = "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse::<Address>().unwrap();
+        let usage_record = UsageRecord {
+            client_address,
+            model: "gpt-4".to_string(),
+            token_count: 20,
+            timestamp: 1234567890,
+        };
+
+        let signed_usage_record: SignedUsageRecord = usage_record.sign_blocking(&signer).unwrap();
+        assert_eq!(signed_usage_record.payload.token_count, 20);
+    }
+
+    #[tokio::test]
+    async fn test_signed_message_verification() {
+        use crate::signing::{SignableMessage, verify_signed_message_basic};
+        use alloy::signers::local::PrivateKeySigner;
+
+        let signer: PrivateKeySigner = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            .parse()
+            .expect("Valid private key");
+
+        let request = LlmRequest {
+            model: "gpt-4".to_string(),
+            prompt: "Verification test".to_string(),
+            system_prompt: Some("System".to_string()),
+            temperature: Some(0.8),
+            max_tokens: Some(200),
+        };
+
+        let signed_request = request.sign_blocking(&signer).unwrap();
+        
+        // Verify the signature
+        assert!(verify_signed_message_basic(&signed_request).is_ok());
+        
+        // Test that tampering breaks verification
+        let mut tampered_request = signed_request.clone();
+        tampered_request.payload.prompt = "Tampered prompt".to_string();
+        assert!(verify_signed_message_basic(&tampered_request).is_err());
     }
 }

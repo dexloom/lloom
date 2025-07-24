@@ -12,7 +12,8 @@ use config::ExecutorConfig;
 use crowd_models_core::{
     identity::Identity,
     network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
-    protocol::{LlmRequest, LlmResponse, ServiceRole, UsageRecord},
+    protocol::{LlmRequest, LlmResponse, ServiceRole, UsageRecord, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
+    signing::{SignableMessage},
 };
 use futures::StreamExt;
 use libp2p::{
@@ -68,6 +69,10 @@ struct Args {
     /// Enable debug logging
     #[arg(short = 'd', long)]
     debug: bool,
+    
+    /// Enable message signing (default: true)
+    #[arg(long, default_value = "true")]
+    enable_signing: bool,
 }
 
 /// Executor state and runtime data
@@ -77,8 +82,9 @@ struct ExecutorState {
     llm_clients: HashMap<String, LlmClient>,
     usage_records: Vec<UsageRecord>,
     #[allow(dead_code)]
-    pending_requests: HashMap<request_response::OutboundRequestId, ResponseChannel<LlmResponse>>,
+    pending_requests: HashMap<request_response::OutboundRequestId, ResponseChannel<ResponseMessage>>,
     blockchain_client: Option<BlockchainClient>,
+    enable_signing: bool,
 }
 
 #[tokio::main]
@@ -95,7 +101,7 @@ async fn main() -> Result<()> {
         )
         .init();
     
-    info!("Starting Crowd Models Executor...");
+    info!("Starting Crowd Models Executor with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     info!("Config file: {}", args.config);
     info!("RPC URL: {}", args.rpc_url);
     
@@ -269,6 +275,7 @@ async fn main() -> Result<()> {
         usage_records: Vec::new(),
         pending_requests: HashMap::new(),
         blockchain_client,
+        enable_signing: args.enable_signing,
     };
     
     // Set up timers
@@ -335,8 +342,7 @@ async fn handle_swarm_event(
         )) => {
             match message {
                 request_response::Message::Request { request, channel, .. } => {
-                    info!("Received LLM request from {}: model={}", peer, request.model);
-                    handle_llm_request(swarm, request, channel, peer, state).await;
+                    handle_request_message(swarm, request, channel, peer, state).await;
                 }
                 request_response::Message::Response { response, .. } => {
                     debug!("Received unexpected response: {:?}", response);
@@ -385,13 +391,85 @@ async fn handle_swarm_event(
     }
 }
 
+/// Handle an incoming request message (both signed and unsigned)
+async fn handle_request_message(
+    swarm: &mut Swarm<LlmP2pBehaviour>,
+    request_message: RequestMessage,
+    channel: ResponseChannel<ResponseMessage>,
+    client_peer: libp2p::PeerId,
+    state: &mut ExecutorState,
+) {
+    match request_message {
+        RequestMessage::LlmRequest(request) => {
+            info!("Received unsigned LLM request from {}: model={}", client_peer, request.model);
+            if state.enable_signing {
+                warn!("⚠️  Received unsigned request while signing is enabled from peer: {}", client_peer);
+                warn!("Consider enabling signing on client for improved security");
+            }
+            handle_llm_request(swarm, request, channel, client_peer, state, None).await;
+        }
+        RequestMessage::SignedLlmRequest(signed_request) => {
+            info!("Received signed LLM request from {}: model={}", client_peer, signed_request.payload.model);
+            
+            let signer_address = if state.enable_signing {
+                // Verify the signature with time window for replay protection
+                match signed_request.verify_with_time_window(MAX_MESSAGE_AGE_SECS) {
+                    Ok(signer_address) => {
+                        info!("✓ Request signature verified from signer: {}", signer_address);
+                        Some(signer_address)
+                    }
+                    Err(e) => {
+                        error!("✗ Request signature verification failed: {}", e);
+                        warn!("Processing request anyway but logging security issue");
+                        
+                        // Send error response for invalid signature
+                        let error_response = LlmResponse {
+                            content: String::new(),
+                            token_count: 0,
+                            model_used: signed_request.payload.model.clone(),
+                            error: Some(format!("Signature verification failed: {}", e)),
+                        };
+                        
+                        let response_message = if state.enable_signing {
+                            // Sign the error response
+                            match error_response.sign_blocking(&state.identity.wallet) {
+                                Ok(signed_response) => {
+                                    info!("✓ Signed error response with timestamp: {}", signed_response.timestamp);
+                                    ResponseMessage::SignedLlmResponse(signed_response)
+                                }
+                                Err(sign_err) => {
+                                    error!("Failed to sign error response: {}, sending unsigned", sign_err);
+                                    ResponseMessage::LlmResponse(error_response)
+                                }
+                            }
+                        } else {
+                            ResponseMessage::LlmResponse(error_response)
+                        };
+                        
+                        if let Err(e) = swarm.behaviour_mut().request_response.send_response(channel, response_message) {
+                            error!("Failed to send error response: {:?}", e);
+                        }
+                        return;
+                    }
+                }
+            } else {
+                info!("Signature verification disabled, processing signed request without verification");
+                None
+            };
+            
+            handle_llm_request(swarm, signed_request.payload, channel, client_peer, state, signer_address).await;
+        }
+    }
+}
+
 /// Handle an incoming LLM request
 async fn handle_llm_request(
     _swarm: &mut Swarm<LlmP2pBehaviour>,
     request: LlmRequest,
-    channel: ResponseChannel<LlmResponse>,
+    channel: ResponseChannel<ResponseMessage>,
     _client_peer: libp2p::PeerId,
     state: &mut ExecutorState,
+    verified_signer: Option<alloy::primitives::Address>,
 ) {
     let model = request.model.clone();
     info!("DEBUG: 🎯 Received LLM request for model: '{}'", model);
@@ -413,7 +491,22 @@ async fn handle_llm_request(
                 error: Some(format!("Model {} not supported", model)),
             };
             
-            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, error_response) {
+            let response_message = if state.enable_signing {
+                match error_response.sign_blocking(&state.identity.wallet) {
+                    Ok(signed_response) => {
+                        info!("✓ Signed error response with timestamp: {}", signed_response.timestamp);
+                        ResponseMessage::SignedLlmResponse(signed_response)
+                    }
+                    Err(sign_err) => {
+                        error!("Failed to sign error response: {}, sending unsigned", sign_err);
+                        ResponseMessage::LlmResponse(error_response)
+                    }
+                }
+            } else {
+                ResponseMessage::LlmResponse(error_response)
+            };
+            
+            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, response_message) {
                 error!("Failed to send error response: {:?}", e);
             }
             return;
@@ -431,7 +524,22 @@ async fn handle_llm_request(
                 error: Some(format!("Backend {} not available", backend_name)),
             };
             
-            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, error_response) {
+            let response_message = if state.enable_signing {
+                match error_response.sign_blocking(&state.identity.wallet) {
+                    Ok(signed_response) => {
+                        info!("✓ Signed error response with timestamp: {}", signed_response.timestamp);
+                        ResponseMessage::SignedLlmResponse(signed_response)
+                    }
+                    Err(sign_err) => {
+                        error!("Failed to sign error response: {}, sending unsigned", sign_err);
+                        ResponseMessage::LlmResponse(error_response)
+                    }
+                }
+            } else {
+                ResponseMessage::LlmResponse(error_response)
+            };
+            
+            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, response_message) {
                 error!("Failed to send error response: {:?}", e);
             }
             return;
@@ -456,15 +564,31 @@ async fn handle_llm_request(
                 error: None,
             };
             
+            // Sign response if signing is enabled
+            let response_message = if state.enable_signing {
+                match response.sign_blocking(&state.identity.wallet) {
+                    Ok(signed_response) => {
+                        info!("✓ Signed response with timestamp: {}", signed_response.timestamp);
+                        ResponseMessage::SignedLlmResponse(signed_response)
+                    }
+                    Err(sign_err) => {
+                        error!("Failed to sign response: {}, sending unsigned", sign_err);
+                        ResponseMessage::LlmResponse(response)
+                    }
+                }
+            } else {
+                ResponseMessage::LlmResponse(response)
+            };
+            
             // Send response
-            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, response) {
+            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, response_message) {
                 error!("Failed to send response: {:?}", e);
             } else {
                 // Record usage for blockchain submission
-                // TODO: In a real implementation, we need to map the peer_id to the client's EVM address
-                // For now, we'll use a placeholder approach
+                // Use verified signer address if available, otherwise use placeholder
+                let client_address = verified_signer.unwrap_or(state.identity.evm_address);
                 let usage_record = UsageRecord {
-                    client_address: state.identity.evm_address, // Placeholder - should be actual client address
+                    client_address,
                     model: model.clone(),
                     token_count,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
@@ -482,7 +606,22 @@ async fn handle_llm_request(
                 error: Some(e.to_string()),
             };
             
-            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, error_response) {
+            let response_message = if state.enable_signing {
+                match error_response.sign_blocking(&state.identity.wallet) {
+                    Ok(signed_response) => {
+                        info!("✓ Signed error response with timestamp: {}", signed_response.timestamp);
+                        ResponseMessage::SignedLlmResponse(signed_response)
+                    }
+                    Err(sign_err) => {
+                        error!("Failed to sign error response: {}, sending unsigned", sign_err);
+                        ResponseMessage::LlmResponse(error_response)
+                    }
+                }
+            } else {
+                ResponseMessage::LlmResponse(error_response)
+            };
+            
+            if let Err(e) = _swarm.behaviour_mut().request_response.send_response(channel, response_message) {
                 error!("Failed to send error response: {:?}", e);
             }
         }

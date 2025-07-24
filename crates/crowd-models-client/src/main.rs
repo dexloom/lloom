@@ -7,7 +7,8 @@ use clap::Parser;
 use crowd_models_core::{
     identity::Identity,
     network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
-    protocol::{LlmRequest, LlmResponse, ServiceRole},
+    protocol::{LlmRequest, LlmResponse, ServiceRole, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
+    signing::{SignableMessage},
 };
 use futures::StreamExt;
 use libp2p::{
@@ -61,6 +62,10 @@ struct Args {
     /// Enable debug logging
     #[arg(short = 'd', long)]
     debug: bool,
+    
+    /// Enable message signing (default: true)
+    #[arg(long, default_value = "true")]
+    enable_signing: bool,
 }
 
 /// Client state for tracking the request lifecycle
@@ -86,7 +91,7 @@ async fn main() -> Result<()> {
         )
         .init();
     
-    info!("Starting Crowd Models Client...");
+    info!("Starting Crowd Models Client with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     info!("Model: {}", args.model);
     info!("Prompt: {}", args.prompt);
     
@@ -150,7 +155,7 @@ async fn main() -> Result<()> {
     // Run the client with timeout
     let result = timeout(
         Duration::from_secs(args.timeout_secs),
-        run_client(&mut swarm, &args, &mut client_state)
+        run_client(&mut swarm, &args, &mut client_state, &identity)
     ).await;
     
     match result {
@@ -183,6 +188,7 @@ async fn run_client(
     swarm: &mut Swarm<LlmP2pBehaviour>,
     args: &Args,
     state: &mut ClientState,
+    identity: &Identity,
 ) -> Result<LlmResponse> {
     info!("Phase 1: Discovering executors...");
     
@@ -214,7 +220,7 @@ async fn run_client(
         // Process events immediately after each query
         for _ in 0..10 {
             if let Ok(event) = tokio::time::timeout(Duration::from_millis(100), swarm.select_next_some()).await {
-                handle_swarm_event(swarm, event, state).await;
+                handle_swarm_event(swarm, event, state, args, identity).await;
                 if !state.discovered_executors.is_empty() {
                     info!("DEBUG: Early discovery success - found {} executors", state.discovered_executors.len());
                     break;
@@ -242,7 +248,7 @@ async fn run_client(
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
-                handle_swarm_event(swarm, event, state).await;
+                handle_swarm_event(swarm, event, state, args, identity).await;
                 
                 // Check if we found executors and can proceed
                 if !state.discovered_executors.is_empty() && !state.discovery_complete {
@@ -262,8 +268,25 @@ async fn run_client(
                     
                     info!("Phase 3: Sending request to executor: {}", selected_executor);
                     
-                    // Send the request
-                    let request_id = swarm.behaviour_mut().request_response.send_request(&selected_executor, request);
+                    // Send the request (with or without signing based on configuration)
+                    let request_message = if args.enable_signing {
+                        // Sign the request before sending
+                        match request.sign_blocking(&identity.wallet) {
+                            Ok(signed_request) => {
+                                info!("Successfully signed request with timestamp: {}", signed_request.timestamp);
+                                RequestMessage::SignedLlmRequest(signed_request)
+                            }
+                            Err(e) => {
+                                error!("Failed to sign request: {}, falling back to unsigned", e);
+                                RequestMessage::LlmRequest(request)
+                            }
+                        }
+                    } else {
+                        info!("Signing disabled, sending unsigned request");
+                        RequestMessage::LlmRequest(request)
+                    };
+                    
+                    let request_id = swarm.behaviour_mut().request_response.send_request(&selected_executor, request_message);
                     state.pending_request = Some((request_id, selected_executor));
                     state.discovery_complete = true;
                 }
@@ -294,6 +317,8 @@ async fn handle_swarm_event(
     _swarm: &mut Swarm<LlmP2pBehaviour>,
     event: SwarmEvent<LlmP2pEvent>,
     state: &mut ClientState,
+    args: &Args,
+    _identity: &Identity,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -343,8 +368,41 @@ async fn handle_swarm_event(
         )) => {
             if let Some((pending_id, expected_peer)) = &state.pending_request {
                 if request_id == *pending_id && peer == *expected_peer {
-                    info!("Received response from {}: {} tokens", peer, response.token_count);
-                    state.response_received = Some(response);
+                    // Handle both signed and unsigned responses
+                    let llm_response = match &response {
+                        ResponseMessage::LlmResponse(resp) => {
+                            info!("Received unsigned response from {}: {} tokens", peer, resp.token_count);
+                            Some(resp.clone())
+                        }
+                        ResponseMessage::SignedLlmResponse(signed_resp) => {
+                            info!("Received signed response from {}", peer);
+                            
+                            // Verify the signature if signing is enabled
+                            if args.enable_signing {
+                                match signed_resp.verify_with_time_window(MAX_MESSAGE_AGE_SECS) {
+                                    Ok(signer_address) => {
+                                        info!("✓ Response signature verified from signer: {}", signer_address);
+                                        info!("Response content: {} tokens", signed_resp.payload.token_count);
+                                        Some(signed_resp.payload.clone())
+                                    }
+                                    Err(e) => {
+                                        error!("✗ Response signature verification failed: {}", e);
+                                        warn!("Response may be tampered with or from untrusted source");
+                                        // Still process the response but log the security issue
+                                        info!("Processing unverified response: {} tokens", signed_resp.payload.token_count);
+                                        Some(signed_resp.payload.clone())
+                                    }
+                                }
+                            } else {
+                                info!("Signature verification disabled, processing response: {} tokens", signed_resp.payload.token_count);
+                                Some(signed_resp.payload.clone())
+                            }
+                        }
+                    };
+                    
+                    if let Some(resp) = llm_response {
+                        state.response_received = Some(resp);
+                    }
                 }
             }
         }
@@ -632,6 +690,7 @@ mod tests {
             max_tokens: None,
             timeout_secs: 120,
             debug: false,
+            enable_signing: true,
         };
         
         let debug_str = format!("{:?}", args);
