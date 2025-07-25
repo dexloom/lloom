@@ -65,7 +65,7 @@ pub struct ExecutorInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ServiceRole {
     Executor,
-    Accountant,
+    Validator,
 }
 
 impl ServiceRole {
@@ -73,7 +73,7 @@ impl ServiceRole {
     pub fn to_kad_key(&self) -> Vec<u8> {
         match self {
             ServiceRole::Executor => b"lloom/executor".to_vec(),
-            ServiceRole::Accountant => b"lloom/accountant".to_vec(),
+            ServiceRole::Validator => b"lloom/validator".to_vec(),
         }
     }
 }
@@ -230,18 +230,18 @@ mod tests {
     #[test]
     fn test_service_role_to_kad_key() {
         let executor_key = ServiceRole::Executor.to_kad_key();
-        let accountant_key = ServiceRole::Accountant.to_kad_key();
+        let validator_key = ServiceRole::Validator.to_kad_key();
 
         assert_eq!(executor_key, b"lloom/executor".to_vec());
-        assert_eq!(accountant_key, b"lloom/accountant".to_vec());
-        assert_ne!(executor_key, accountant_key);
+        assert_eq!(validator_key, b"lloom/validator".to_vec());
+        assert_ne!(executor_key, validator_key);
     }
 
     #[test]
     fn test_service_role_equality() {
         assert_eq!(ServiceRole::Executor, ServiceRole::Executor);
-        assert_eq!(ServiceRole::Accountant, ServiceRole::Accountant);
-        assert_ne!(ServiceRole::Executor, ServiceRole::Accountant);
+        assert_eq!(ServiceRole::Validator, ServiceRole::Validator);
+        assert_ne!(ServiceRole::Executor, ServiceRole::Validator);
     }
 
     #[test]

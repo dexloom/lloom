@@ -15,8 +15,8 @@ graph TD
     end
 
     subgraph "P2P Network (libp2p)"
-        Accountant1[Accountant Supernode 1]
-        Accountant2[Accountant Supernode 2]
+        Validator1[Validator Supernode 1]
+        Validator2[Validator Supernode 2]
         Executor1[Executor 1 <br/>- Model A <br/>- Model B]
         Executor2[Executor 2 <br/>- Model C]
     end
@@ -25,13 +25,13 @@ graph TD
         AccountingContract[Accounting Smart Contract]
     end
 
-    Client -- "1. Discover Executors via libp2p Kademlia" --> Accountant1
-    Client -- "1. Discover Executors via libp2p Kademlia" --> Accountant2
-    Accountant1 -- "2. Provide Executor List" --> Client
-    Accountant2 -- "2. Provide Executor List" --> Client
+    Client -- "1. Discover Executors via libp2p Kademlia" --> Validator1
+    Client -- "1. Discover Executors via libp2p Kademlia" --> Validator2
+    Validator1 -- "2. Provide Executor List" --> Client
+    Validator2 -- "2. Provide Executor List" --> Client
 
-    Executor1 -- "Registers with" --> Accountant1
-    Executor2 -- "Registers with" --> Accountant2
+    Executor1 -- "Registers with" --> Validator1
+    Executor2 -- "Registers with" --> Validator2
 
     Client -- "3. LLM Request (OpenAI format)" --> Executor1
     Executor1 -- "4. LLM Response + Token Count" --> Client
@@ -63,7 +63,7 @@ llmp2p/
 │   ├── llmp2p-executor/      # Binary for the Executor role
 │   │   ├── src/
 │   │   └── Cargo.toml
-│   └── llmp2p-accountant/    # Binary for the Accountant role
+│   └── llmp2p-validator/    # Binary for the Validator role
 │       ├── src/
 │       └── Cargo.toml
 ├── contracts/                  # Solidity smart contracts
@@ -78,7 +78,7 @@ members = [
     "crates/llmp2p-core",
     "crates/llmp2p-client",
     "crates/llmp2p-executor",
-    "crates/llmp2p-accountant",
+    "crates/llmp2p-validator",
 ]
 resolver = "2"
 ```
@@ -214,31 +214,31 @@ pub struct LlmP2pBehaviour {
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Accountant
+    participant Validator
     participant Executor
 
-    Client->>+Accountant: 1. Kademlia: FIND_NODE(Executor_Role_Key)
+    Client->>+Validator: 1. Kademlia: FIND_NODE(Executor_Role_Key)
     Note right of Client: Client queries the DHT to find peers<br/>providing the "Executor" service.
-    Accountant-->>-Client: 2. List of known Executor Peers
+    Validator-->>-Client: 2. List of known Executor Peers
 
     Client->>+Executor: 3. Request-Response: LlmRequest(model, prompt)
     Note right of Client: Client sends a direct, stateful request<br/>to a chosen Executor.
     Executor-->>-Client: 4. LlmResponse(content, token_count)
 
-    Executor->>+Accountant: 5. Kademlia: START_PROVIDING(Executor_Role_Key)
+    Executor->>+Validator: 5. Kademlia: START_PROVIDING(Executor_Role_Key)
     Note left of Executor: Executor periodically announces its<br/>availability to the network.
-    Accountant-->>-Executor: 6. Acknowledged (DHT stores record)
+    Validator-->>-Executor: 6. Acknowledged (DHT stores record)
 ```
 
-*   **Accountant Logic**:
+*   **Validator Logic**:
     *   **Role**: Network bootstrap and discovery anchor.
     *   **Action**: Runs a `libp2p` Swarm in listening mode. Its Kademlia instance is configured in server mode. It performs no application logic; it simply exists to keep the DHT healthy and answer queries, which `libp2p` handles automatically.
 *   **Executor Logic**:
     *   **Role**: Service provider.
-    *   **Action**: Connects to Accountants to join the network. Periodically calls `kademlia.start_providing()` with a predefined key representing the "Executor" role. Its main loop listens for incoming `request_response::Event::Message` events.
+    *   **Action**: Connects to Validators to join the network. Periodically calls `kademlia.start_providing()` with a predefined key representing the "Executor" role. Its main loop listens for incoming `request_response::Event::Message` events.
 *   **Client Logic**:
     *   **Role**: Service consumer.
-    *   **Action**: Connects to Accountants. Calls `kademlia.get_providers()` to find Executor `PeerId`s. Selects an Executor and uses `request_response.send_request()` to initiate the job.
+    *   **Action**: Connects to Validators. Calls `kademlia.get_providers()` to find Executor `PeerId`s. Selects an Executor and uses `request_response.send_request()` to initiate the job.
 
 ### Step 5: Executor: LLM Service Provider
 
@@ -272,12 +272,12 @@ sequenceDiagram
     5.  **Await**: Loop while listening for the corresponding `request_response::Event::Message` response. Implement a timeout. If the chosen executor fails, retry with the next in the list.
     6.  **Display**: Print the `content` from the `LlmResponse` to `stdout` and exit successfully.
 
-### Step 7: Accountant: Discovery Supernode
+### Step 7: Validator: Discovery Supernode
 
-**Objective**: Implement the `llmp2p-accountant` as a stable, "boring" network anchor.
+**Objective**: Implement the `llmp2p-validator` as a stable, "boring" network anchor.
 
 **Detailed Logic**:
-*   **CLI**: `llmp2p-accountant --private-key <STATIC_KEY> --listen-address /ip4/0.0.0.0/tcp/4001`
+*   **CLI**: `llmp2p-validator --private-key <STATIC_KEY> --listen-address /ip4/0.0.0.0/tcp/4001`
 *   **Implementation**: The `main` function will initialize the `Identity` and `Swarm`, call `swarm.listen_on()`, and then enter a simple `loop { swarm.select_next_some().await; }`. There is no other logic required. Its stability and public address are its features.
 
 ### Step 8: Blockchain Integration: Accounting Smart Contract
@@ -388,7 +388,7 @@ contract Accounting {
 **Test Workflow**:
 1.  The script starts `anvil` and the mock LLM server.
 2.  It deploys `Accounting.sol` to `anvil` and captures the contract address.
-3.  It launches the Accountant, Executor (configured with the mock LLM's address), and Client processes.
+3.  It launches the Validator, Executor (configured with the mock LLM's address), and Client processes.
 4.  It waits for the nodes to connect.
 5.  It executes the Client CLI command.
 6.  It asserts that the Client's `stdout` contains the expected mock response.
@@ -401,7 +401,7 @@ contract Accounting {
 
 **Documentation Checklist**:
 *   [ ] **Root `README.md`**: High-level project overview, architecture diagram, and quickstart guide.
-*   [ ] **Crate-Level `README.md`s**: Detailed explanation of each role (Client, Executor, Accountant), its purpose, and all of its CLI arguments and options.
+*   [ ] **Crate-Level `README.md`s**: Detailed explanation of each role (Client, Executor, Validator), its purpose, and all of its CLI arguments and options.
 *   [ ] **Code Documentation**: All public structs, enums, functions, and modules commented using `///` syntax for `cargo doc`.
 *   [ ] **Configuration Examples**: Create `config.toml.example` files with comments explaining each setting.
-*   [ ] **Deployment Guide**: A markdown file explaining how to deploy an Accountant supernode on a typical cloud VM, including firewall considerations.
+*   [ ] **Deployment Guide**: A markdown file explaining how to deploy a Validator supernode on a typical cloud VM, including firewall considerations.

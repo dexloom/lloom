@@ -3,7 +3,7 @@ members = [
     "crates/lloom-core",
     "crates/lloom-client",
     "crates/lloom-executor",
-    "crates/lloom-accountant",
+    "crates/lloom-validator",
 ]
 resolver = "2"
 

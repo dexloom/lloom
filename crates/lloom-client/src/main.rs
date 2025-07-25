@@ -31,7 +31,7 @@ struct Args {
     #[arg(long, env = "LLOOM_PRIVATE_KEY")]
     private_key: Option<String>,
     
-    /// Bootstrap nodes to connect to (accountant nodes)
+    /// Bootstrap nodes to connect to (validator nodes)
     #[arg(long, value_delimiter = ',', required = true)]
     bootstrap_nodes: Vec<String>,
     
@@ -674,8 +674,8 @@ mod tests {
         let key2 = ServiceRole::Executor.to_kad_key();
         assert_eq!(key1, key2); // Should be deterministic
         
-        let accountant_key = ServiceRole::Accountant.to_kad_key();
-        assert_ne!(key1, accountant_key); // Different roles should have different keys
+        let validator_key = ServiceRole::Validator.to_kad_key();
+        assert_ne!(key1, validator_key); // Different roles should have different keys
     }
 
     #[test]

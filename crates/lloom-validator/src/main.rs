@@ -1,6 +1,6 @@
-//! Accountant node for the Lloom P2P network.
+//! Validator node for the Lloom P2P network.
 //!
-//! The Accountant serves as a stable supernode for network bootstrap and discovery.
+//! The Validator serves as a stable supernode for network bootstrap and discovery.
 //! It maintains a directory of active executors and helps clients discover them.
 
 use anyhow::Result;
@@ -28,24 +28,24 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-/// Command-line arguments for the Accountant node
+/// Command-line arguments for the Validator node
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Accountant node for Lloom P2P network")]
+#[command(author, version, about = "Validator node for Lloom P2P network")]
 struct Args {
     /// Path to the private key file (hex-encoded)
-    #[arg(short = 'k', long, env = "ACCOUNTANT_PRIVATE_KEY_FILE")]
+    #[arg(short = 'k', long, env = "VALIDATOR_PRIVATE_KEY_FILE")]
     private_key_file: Option<PathBuf>,
 
     /// Port to listen on for P2P connections
-    #[arg(short = 'p', long, default_value = "9000", env = "ACCOUNTANT_P2P_PORT")]
+    #[arg(short = 'p', long, default_value = "9000", env = "VALIDATOR_P2P_PORT")]
     p2p_port: u16,
 
     /// External address for other nodes to connect to (e.g., /ip4/1.2.3.4/tcp/9000)
-    #[arg(long, env = "ACCOUNTANT_EXTERNAL_ADDR")]
+    #[arg(long, env = "VALIDATOR_EXTERNAL_ADDR")]
     external_addr: Option<String>,
 
     /// Enable debug logging
-    #[arg(short = 'd', long, env = "ACCOUNTANT_DEBUG")]
+    #[arg(short = 'd', long, env = "VALIDATOR_DEBUG")]
     debug: bool,
 }
 
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("Starting Lloom Accountant node...");
+    info!("Starting Lloom Validator node...");
 
     // Load or generate identity
     let identity = load_or_generate_identity(args.private_key_file.as_deref()).await?;
@@ -98,19 +98,19 @@ async fn main() -> Result<()> {
     helpers::subscribe_topic(&mut swarm, "lloom/announcements")?;
     helpers::subscribe_topic(&mut swarm, "lloom/executor-updates")?;
 
-    // Register as an accountant in Kademlia
-    let accountant_key = ServiceRole::Accountant.to_kad_key();
-    info!("DEBUG: Registering accountant with key: {:?}", accountant_key);
+    // Register as a validator in Kademlia
+    let validator_key = ServiceRole::Validator.to_kad_key();
+    info!("DEBUG: Registering validator with key: {:?}", validator_key);
     let record = Record {
-        key: accountant_key.clone().into(),
+        key: validator_key.clone().into(),
         value: identity.peer_id.to_bytes(),
         publisher: Some(identity.peer_id),
         expires: None,
     };
     swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One)?;
-    info!("DEBUG: Accountant registration completed");
+    info!("DEBUG: Validator registration completed");
 
-    info!("Accountant node started successfully");
+    info!("Validator node started successfully");
 
     // Set up shutdown signal handler
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!("Shutting down accountant node...");
+    info!("Shutting down validator node...");
     Ok(())
 }
 
@@ -178,7 +178,7 @@ async fn handle_swarm_event(
             info!("Listening on {}", address);
         }
         SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-            info!("DEBUG: Accountant connection established with {} at {}", peer_id, endpoint.get_remote_address());
+            info!("DEBUG: Validator connection established with {} at {}", peer_id, endpoint.get_remote_address());
             // Add the connected peer to Kademlia for mutual bootstrap
             swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
         }
@@ -222,18 +222,18 @@ async fn perform_periodic_tasks(
     swarm: &mut Swarm<LlmP2pBehaviour>,
     known_executors: &HashSet<libp2p::PeerId>,
 ) {
-    // Refresh our accountant registration
-    let accountant_key = ServiceRole::Accountant.to_kad_key();
+    // Refresh our validator registration
+    let validator_key = ServiceRole::Validator.to_kad_key();
     let peer_id = *swarm.local_peer_id();
     let record = Record {
-        key: accountant_key.into(),
+        key: validator_key.into(),
         value: peer_id.to_bytes(),
         publisher: Some(peer_id),
         expires: None,
     };
     
     if let Err(e) = swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
-        warn!("Failed to refresh accountant registration: {:?}", e);
+        warn!("Failed to refresh validator registration: {:?}", e);
     }
 
     // Query for executors periodically
@@ -256,7 +256,7 @@ mod tests {
         use clap::Parser;
         
         // Test with minimal args
-        let args = Args::try_parse_from(&["accountant"]).unwrap();
+        let args = Args::try_parse_from(&["validator"]).unwrap();
         assert_eq!(args.p2p_port, 9000);
         assert_eq!(args.private_key_file, None);
         assert_eq!(args.external_addr, None);
@@ -268,7 +268,7 @@ mod tests {
         use clap::Parser;
         
         let args = Args::try_parse_from(&[
-            "accountant",
+            "validator",
             "--p2p-port", "8000",
             "--debug",
             "--external-addr", "/ip4/192.168.1.1/tcp/8000"
@@ -365,12 +365,12 @@ mod tests {
     #[test]
     fn test_service_role_kad_keys() {
         // Test that service roles generate consistent Kademlia keys
-        let accountant_key1 = ServiceRole::Accountant.to_kad_key();
-        let accountant_key2 = ServiceRole::Accountant.to_kad_key();
-        assert_eq!(accountant_key1, accountant_key2);
+        let validator_key1 = ServiceRole::Validator.to_kad_key();
+        let validator_key2 = ServiceRole::Validator.to_kad_key();
+        assert_eq!(validator_key1, validator_key2);
         
         let executor_key = ServiceRole::Executor.to_kad_key();
-        assert_ne!(accountant_key1, executor_key);
+        assert_ne!(validator_key1, executor_key);
     }
 
     #[tokio::test]

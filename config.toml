@@ -28,5 +28,5 @@ max_batch_size = 100
 [network]
 port = 9001
 # external_address = "/ip4/your.public.ip/tcp/9001"  # Set if behind NAT
-bootstrap_nodes = []  # Add known accountant nodes here
+bootstrap_nodes = []  # Add known validator nodes here
 announce_interval_secs = 300  # 5 minutes

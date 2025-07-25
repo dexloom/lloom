@@ -8,13 +8,13 @@ The Lloom network consists of three types of nodes:
 
 - **Client**: Requests LLM services from the network
 - **Executor**: Provides LLM services and processes requests
-- **Accountant**: Maintains network discovery and acts as a bootstrap supernode
+- **Validator**: Maintains network discovery and acts as a bootstrap supernode
 
 ```mermaid
 graph TD
-    Client[Client Node] --> Accountant[Accountant Supernode]
-    Accountant --> Executor1[Executor Node 1]
-    Accountant --> Executor2[Executor Node 2]
+    Client[Client Node] --> Validator[Validator Supernode]
+    Validator --> Executor1[Executor Node 1]
+    Validator --> Executor2[Executor Node 2]
     Client --> Executor1
     Executor1 --> Blockchain[Ethereum Contract]
     Executor2 --> Blockchain
@@ -61,10 +61,10 @@ export PRIVATE_KEY="your_private_key_here"
 ./scripts/deploy.sh
 ```
 
-3. **Start an Accountant Node**:
+3. **Start a Validator Node**:
 ```bash
-./target/release/lloom-accountant \
-    --private-key-file accountant-key.txt \
+./target/release/lloom-validator \
+    --private-key-file validator-key.txt \
     --p2p-port 9000
 ```
 
@@ -126,7 +126,7 @@ lloom/
 │   ├── lloom-core/     # Shared networking and protocol logic
 │   ├── lloom-client/   # Client CLI application
 │   ├── lloom-executor/ # Executor service node
-│   └── lloom-accountant/ # Discovery supernode
+│   └── lloom-validator/ # Discovery supernode
 ├── contracts/                 # Ethereum smart contracts
 ├── scripts/                   # Deployment and utility scripts
 └── docs/                      # Additional documentation

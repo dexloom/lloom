@@ -1,13 +1,13 @@
-//! Lloom Accountant Library
+//! Lloom Validator Library
 //!
-//! This crate provides functionality for the accountant node.
+//! This crate provides functionality for the validator node.
 
 pub mod network_utils {
     use lloom_core::{Identity, Result};
     use std::collections::HashSet;
     use libp2p::PeerId;
 
-    /// Helper functions for accountant network operations
+    /// Helper functions for validator network operations
     pub fn load_identity_from_file(path: Option<&std::path::Path>) -> Result<Identity> {
         if let Some(path) = path {
             if path.exists() {

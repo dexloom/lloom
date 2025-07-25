@@ -11,7 +11,7 @@ Comprehensive unit test coverage has been successfully implemented and verified 
 - **Error module**: 9 tests covering error handling, conversions, error chains, traits
 - **Network module**: 5 tests covering P2P behavior creation, helper functions, topic subscription
 
-### ✅ lloom-accountant: **18 tests passing**
+### ✅ lloom-validator: **18 tests passing**
 - **Library functions**: 6 tests covering executor tracking, identity file management
 - **Main application**: 12 tests covering CLI argument parsing, identity loading, multiaddr validation, service discovery
 
@@ -27,7 +27,7 @@ Comprehensive unit test coverage has been successfully implemented and verified 
 - ✅ **Networking**: P2P behavior setup, topic management, Kademlia integration
 
 ### Service Components
-- ✅ **Accountant Node**: Bootstrap functionality, executor discovery, network maintenance
+- ✅ **Validator Node**: Bootstrap functionality, executor discovery, network maintenance
 - ✅ **Client Application**: Request handling, parameter validation, response processing
 
 ## Test Quality Features
@@ -59,8 +59,8 @@ All passing tests can be run individually by crate:
 # Core functionality tests (37 tests)
 cd crates/lloom-core && cargo test
 
-# Accountant service tests (18 tests)
-cd crates/lloom-accountant && cargo test
+# Validator service tests (18 tests)
+cd crates/lloom-validator && cargo test
 
 # Client application tests (12 tests)
 cd crates/lloom-client && cargo test --lib

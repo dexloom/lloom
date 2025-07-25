@@ -152,11 +152,11 @@ mod tests {
     #[test]
     fn test_service_role_kad_keys() {
         let executor_key = ServiceRole::Executor.to_kad_key();
-        let accountant_key = ServiceRole::Accountant.to_kad_key();
+        let validator_key = ServiceRole::Validator.to_kad_key();
         
         assert_eq!(executor_key, b"lloom/executor");
-        assert_eq!(accountant_key, b"lloom/accountant");
-        assert_ne!(executor_key, accountant_key);
+        assert_eq!(validator_key, b"lloom/validator");
+        assert_ne!(executor_key, validator_key);
     }
 
     #[tokio::test]
