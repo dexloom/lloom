@@ -1,5 +1,5 @@
-//! Crowd Models Executor Library
-//! 
+//! Lloom Executor Library
+//!
 //! This library provides the core functionality for the executor node,
 //! including LLM client management, model discovery, and blockchain integration.
 

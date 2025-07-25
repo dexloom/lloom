@@ -1,9 +1,9 @@
-//! Crowd Models Accountant Library
-//! 
+//! Lloom Accountant Library
+//!
 //! This crate provides functionality for the accountant node.
 
 pub mod network_utils {
-    use crowd_models_core::{Identity, Result};
+    use lloom_core::{Identity, Result};
     use std::collections::HashSet;
     use libp2p::PeerId;
 
@@ -12,14 +12,14 @@ pub mod network_utils {
         if let Some(path) = path {
             if path.exists() {
                 let key_hex = std::fs::read_to_string(path)
-                    .map_err(|e| crowd_models_core::Error::Io(e))?;
+                    .map_err(|e| lloom_core::Error::Io(e))?;
                 let key_hex = key_hex.trim();
                 Identity::from_str(key_hex)
             } else {
                 let identity = Identity::generate();
                 let key_hex = hex::encode(identity.wallet.to_bytes());
                 std::fs::write(path, key_hex)
-                    .map_err(|e| crowd_models_core::Error::Io(e))?;
+                    .map_err(|e| lloom_core::Error::Io(e))?;
                 Ok(identity)
             }
         } else {

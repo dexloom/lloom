@@ -1,5 +1,5 @@
-//! Identity management for the Crowd Models P2P network.
-//! 
+//! Identity management for the Lloom P2P network.
+//!
 //! This module provides a unified cryptographic identity that works with both
 //! libp2p networking and Ethereum blockchain operations.
 
@@ -8,7 +8,7 @@ use alloy::signers::local::PrivateKeySigner;
 use libp2p::identity::{Keypair, PeerId, secp256k1};
 use crate::error::{Error, Result};
 
-/// A unified identity for nodes in the Crowd Models network.
+/// A unified identity for nodes in the Lloom network.
 ///
 /// This struct combines a secp256k1 private key that can be used for both
 /// P2P networking (via libp2p) and blockchain operations (via alloy).

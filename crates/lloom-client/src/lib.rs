@@ -1,9 +1,9 @@
-//! Crowd Models Client Library
-//! 
+//! Lloom Client Library
+//!
 //! This crate provides functionality for the client application.
 
 pub mod client_utils {
-    use crowd_models_core::protocol::LlmRequest;
+    use lloom_core::protocol::LlmRequest;
 
     /// Validate and parse bootstrap node addresses
     pub fn parse_bootstrap_nodes(addrs: &[String]) -> std::result::Result<Vec<String>, String> {

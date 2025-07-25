@@ -7,7 +7,7 @@ use alloy::{
 };
 use anyhow::{Result, anyhow};
 use crate::config::BlockchainConfig;
-use crowd_models_core::{identity::Identity, protocol::UsageRecord};
+use lloom_core::{identity::Identity, protocol::UsageRecord};
 use tracing::{info, warn, error};
 
 // Generate the contract interface using the sol! macro
@@ -249,7 +249,7 @@ impl BlockchainClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crowd_models_core::protocol::UsageRecord;
+    use lloom_core::protocol::UsageRecord;
     use alloy::primitives::Address;
     
     #[tokio::test]

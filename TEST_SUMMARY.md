@@ -1,26 +1,26 @@
-# Crowd Models Test Coverage Summary
+# Lloom Test Coverage Summary
 
 ## Overview
-Comprehensive unit test coverage has been successfully implemented and verified for the Crowd Models P2P LLM service codebase.
+Comprehensive unit test coverage has been successfully implemented and verified for the Lloom P2P LLM service codebase.
 
 ## Test Results Summary
 
-### ✅ crowd-models-core: **37 tests passing**
+### ✅ lloom-core: **37 tests passing**
 - **Identity module**: 8 tests covering cryptographic identity generation, serialization, deterministic behavior
 - **Protocol module**: 15 tests covering LLM request/response structures, service roles, usage records, serialization
 - **Error module**: 9 tests covering error handling, conversions, error chains, traits
 - **Network module**: 5 tests covering P2P behavior creation, helper functions, topic subscription
 
-### ✅ crowd-models-accountant: **18 tests passing**
+### ✅ lloom-accountant: **18 tests passing**
 - **Library functions**: 6 tests covering executor tracking, identity file management
 - **Main application**: 12 tests covering CLI argument parsing, identity loading, multiaddr validation, service discovery
 
-### ✅ crowd-models-client: **12 tests passing** 
+### ✅ lloom-client: **12 tests passing**
 - **Library functions**: 12 tests covering bootstrap node parsing, LLM request creation, parameter validation, response formatting
 
 ## Test Coverage by Component
 
-### Core Functionality (crowd-models-core)
+### Core Functionality (lloom-core)
 - ✅ **Identity Management**: Cryptographic key generation, P2P identity creation, EVM address derivation
 - ✅ **Protocol Structures**: LLM request/response serialization, service role management, usage tracking
 - ✅ **Error Handling**: Comprehensive error types, conversion traits, error propagation
@@ -57,17 +57,17 @@ All passing tests can be run individually by crate:
 
 ```bash
 # Core functionality tests (37 tests)
-cd crates/crowd-models-core && cargo test
+cd crates/lloom-core && cargo test
 
-# Accountant service tests (18 tests) 
-cd crates/crowd-models-accountant && cargo test
+# Accountant service tests (18 tests)
+cd crates/lloom-accountant && cargo test
 
 # Client application tests (12 tests)
-cd crates/crowd-models-client && cargo test --lib
+cd crates/lloom-client && cargo test --lib
 ```
 
 ## Total Test Count
-**67 passing unit tests** across the core components of the Crowd Models P2P LLM service.
+**67 passing unit tests** across the core components of the Lloom P2P LLM service.
 
 ## Notes
 - Some integration tests in executor and client main.rs files have compilation issues due to external dependency API changes (libp2p, alloy)

@@ -1,10 +1,10 @@
-//! Crowd Models Client
-//! 
-//! A CLI tool for interacting with the Crowd Models P2P network to request LLM services.
+//! Lloom Client
+//!
+//! A CLI tool for interacting with the Lloom P2P network to request LLM services.
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use crowd_models_core::{
+use lloom_core::{
     identity::Identity,
     network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
     protocol::{LlmRequest, LlmResponse, ServiceRole, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
@@ -28,7 +28,7 @@ use tracing::{debug, info, warn, error};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Private key (hex encoded) for identity
-    #[arg(long, env = "CROWD_MODELS_PRIVATE_KEY")]
+    #[arg(long, env = "LLOOM_PRIVATE_KEY")]
     private_key: Option<String>,
     
     /// Bootstrap nodes to connect to (accountant nodes)
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
         )
         .init();
     
-    info!("Starting Crowd Models Client with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
+    info!("Starting Lloom Client with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     info!("Model: {}", args.model);
     info!("Prompt: {}", args.prompt);
     
@@ -147,8 +147,8 @@ async fn main() -> Result<()> {
     }
     
     // Subscribe to gossipsub topics
-    helpers::subscribe_topic(&mut swarm, "crowd-models/announcements")?;
-    helpers::subscribe_topic(&mut swarm, "crowd-models/executor-announcements")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/announcements")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/executor-announcements")?;
     
     let mut client_state = ClientState::default();
     
@@ -423,7 +423,7 @@ async fn handle_swarm_event(
             debug!("Received gossipsub message on topic {:?}", message.topic);
             
             // Handle executor announcements
-            if message.topic.as_str() == "crowd-models/executor-announcements" {
+            if message.topic.as_str() == "lloom/executor-announcements" {
                 if let Ok(msg_str) = std::str::from_utf8(&message.data) {
                     if let Some(peer_id_str) = msg_str.strip_prefix("EXECUTOR_AVAILABLE:") {
                         if let Ok(peer_id) = peer_id_str.parse::<PeerId>() {
@@ -443,7 +443,7 @@ async fn handle_swarm_event(
 mod tests {
     use super::*;
     use clap::Parser;
-    use crowd_models_core::protocol::{LlmRequest, LlmResponse};
+    use lloom_core::protocol::{LlmRequest, LlmResponse};
     use libp2p::PeerId;
 
     #[test]

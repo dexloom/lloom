@@ -1,5 +1,5 @@
-//! Crowd Models Executor
-//! 
+//! Lloom Executor
+//!
 //! A service provider node that executes LLM requests and reports usage to the blockchain.
 
 mod config;
@@ -9,7 +9,7 @@ mod blockchain;
 use anyhow::Result;
 use clap::Parser;
 use config::ExecutorConfig;
-use crowd_models_core::{
+use lloom_core::{
     identity::Identity,
     network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
     protocol::{LlmRequest, LlmResponse, ServiceRole, UsageRecord, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
@@ -39,7 +39,7 @@ use tracing::{debug, error, info, warn};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Private key (hex encoded) for identity
-    #[arg(long, env = "CROWD_MODELS_PRIVATE_KEY")]
+    #[arg(long, env = "LLOOM_PRIVATE_KEY")]
     private_key: Option<String>,
     
     /// Bootstrap nodes to connect to
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
         )
         .init();
     
-    info!("Starting Crowd Models Executor with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
+    info!("Starting Lloom Executor with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     info!("Config file: {}", args.config);
     info!("RPC URL: {}", args.rpc_url);
     
@@ -234,9 +234,9 @@ async fn main() -> Result<()> {
     }
     
     // Subscribe to gossipsub topics
-    helpers::subscribe_topic(&mut swarm, "crowd-models/announcements")?;
-    helpers::subscribe_topic(&mut swarm, "crowd-models/executor-updates")?;
-    helpers::subscribe_topic(&mut swarm, "crowd-models/executor-announcements")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/announcements")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/executor-updates")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/executor-announcements")?;
     
     info!("DEBUG: Waiting for network stabilization before registering...");
     
@@ -692,7 +692,7 @@ async fn announce_executor(
     
     // Also announce via gossipsub for better discovery in small networks
     let announcement_msg = format!("EXECUTOR_AVAILABLE:{}", state.identity.peer_id);
-    let topic = libp2p::gossipsub::IdentTopic::new("crowd-models/executor-announcements");
+    let topic = libp2p::gossipsub::IdentTopic::new("lloom/executor-announcements");
     
     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, announcement_msg.as_bytes()) {
         warn!("Failed to publish executor announcement via gossipsub: {:?}", e);

@@ -1,5 +1,5 @@
 [package]
-name = "crowd-models-core"
+name = "lloom-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

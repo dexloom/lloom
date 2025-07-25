@@ -1,6 +1,6 @@
 # LMStudio Integration Guide
 
-This guide explains how to set up and use LMStudio as a backend for the Crowd Models Executor.
+This guide explains how to set up and use LMStudio as a backend for the Lloom Executor.
 
 ## Prerequisites
 
@@ -69,7 +69,7 @@ Update your `config.toml` with the LMStudio backend configuration.
 
 ### 3. Run Executor
 ```bash
-cargo run --bin crowd-models-executor -- --config config.toml
+cargo run --bin lloom-executor -- --config config.toml
 ```
 
 The executor will:
@@ -109,7 +109,7 @@ The executor will:
 ## Example Output
 
 ```
-🚀 Starting Crowd Models Executor...
+🚀 Starting Lloom Executor...
 INFO: Initialized LLM client for backend: lmstudio with models: ["llama-2-7b-chat"]
 INFO: LLM request completed: 89 tokens used, 15.67 tokens/sec, 0.123s to first token, architecture: llama
 ```

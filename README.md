@@ -1,10 +1,10 @@
-# Crowd Models - Decentralized P2P LLM Network
+# Lloom - Decentralized P2P LLM Network
 
 A decentralized peer-to-peer network for distributing Large Language Model (LLM) requests across a network of executor nodes, with blockchain-based accounting for usage tracking.
 
 ## Architecture
 
-The Crowd Models network consists of three types of nodes:
+The Lloom network consists of three types of nodes:
 
 - **Client**: Requests LLM services from the network
 - **Executor**: Provides LLM services and processes requests
@@ -42,8 +42,8 @@ graph TD
 
 ```bash
 # Clone and build all components
-git clone https://github.com/crowd-models/crowd-models
-cd crowd-models
+git clone https://github.com/lloom/lloom
+cd lloom
 cargo build --release
 ```
 
@@ -63,7 +63,7 @@ export PRIVATE_KEY="your_private_key_here"
 
 3. **Start an Accountant Node**:
 ```bash
-./target/release/crowd-models-accountant \
+./target/release/lloom-accountant \
     --private-key-file accountant-key.txt \
     --p2p-port 9000
 ```
@@ -71,10 +71,10 @@ export PRIVATE_KEY="your_private_key_here"
 4. **Start an Executor Node**:
 ```bash
 # Copy and configure the executor
-cp crates/crowd-models-executor/config.toml.example config.toml
+cp crates/lloom-executor/config.toml.example config.toml
 # Edit config.toml with your settings
 
-./target/release/crowd-models-executor \
+./target/release/lloom-executor \
     --private-key "your_executor_private_key" \
     --bootstrap-nodes "/ip4/127.0.0.1/tcp/9000" \
     --config config.toml \
@@ -83,7 +83,7 @@ cp crates/crowd-models-executor/config.toml.example config.toml
 
 5. **Run a Client Request**:
 ```bash
-./target/release/crowd-models-client \
+./target/release/lloom-client \
     --bootstrap-nodes "/ip4/127.0.0.1/tcp/9000" \
     --model "gpt-3.5-turbo" \
     --prompt "Hello, how are you today?"
@@ -93,7 +93,7 @@ cp crates/crowd-models-executor/config.toml.example config.toml
 
 ### Executor Configuration
 
-See [`crates/crowd-models-executor/config.toml.example`](crates/crowd-models-executor/config.toml.example) for a complete configuration example.
+See [`crates/lloom-executor/config.toml.example`](crates/lloom-executor/config.toml.example) for a complete configuration example.
 
 Key sections:
 - `llm_backends`: Configure your LLM provider APIs
@@ -103,7 +103,7 @@ Key sections:
 ### Environment Variables
 
 - `OPENAI_API_KEY`: Your OpenAI API key
-- `CROWD_MODELS_PRIVATE_KEY`: Private key for node identity
+- `LLOOM_PRIVATE_KEY`: Private key for node identity
 - `SEPOLIA_RPC_URL`: Ethereum RPC endpoint
 - `ACCOUNTING_CONTRACT`: Smart contract address
 
@@ -121,12 +121,12 @@ Contract events can be indexed for analytics and billing purposes.
 ### Project Structure
 
 ```
-crowd-models/
+lloom/
 ├── crates/
-│   ├── crowd-models-core/     # Shared networking and protocol logic
-│   ├── crowd-models-client/   # Client CLI application  
-│   ├── crowd-models-executor/ # Executor service node
-│   └── crowd-models-accountant/ # Discovery supernode
+│   ├── lloom-core/     # Shared networking and protocol logic
+│   ├── lloom-client/   # Client CLI application
+│   ├── lloom-executor/ # Executor service node
+│   └── lloom-accountant/ # Discovery supernode
 ├── contracts/                 # Ethereum smart contracts
 ├── scripts/                   # Deployment and utility scripts
 └── docs/                      # Additional documentation
@@ -173,6 +173,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- Issues: [GitHub Issues](https://github.com/crowd-models/crowd-models/issues)
-- Discussions: [GitHub Discussions](https://github.com/crowd-models/crowd-models/discussions)
-- Documentation: [Wiki](https://github.com/crowd-models/crowd-models/wiki)
+- Issues: [GitHub Issues](https://github.com/lloom/lloom/issues)
+- Discussions: [GitHub Discussions](https://github.com/lloom/lloom/discussions)
+- Documentation: [Wiki](https://github.com/lloom/lloom/wiki)

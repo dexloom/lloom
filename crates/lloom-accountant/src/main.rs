@@ -1,11 +1,11 @@
-//! Accountant node for the Crowd Models P2P network.
-//! 
+//! Accountant node for the Lloom P2P network.
+//!
 //! The Accountant serves as a stable supernode for network bootstrap and discovery.
 //! It maintains a directory of active executors and helps clients discover them.
 
 use anyhow::Result;
 use clap::Parser;
-use crowd_models_core::{
+use lloom_core::{
     identity::Identity,
     network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
     protocol::ServiceRole,
@@ -30,7 +30,7 @@ use tracing::{debug, info, warn};
 
 /// Command-line arguments for the Accountant node
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Accountant node for Crowd Models P2P network")]
+#[command(author, version, about = "Accountant node for Lloom P2P network")]
 struct Args {
     /// Path to the private key file (hex-encoded)
     #[arg(short = 'k', long, env = "ACCOUNTANT_PRIVATE_KEY_FILE")]
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("Starting Crowd Models Accountant node...");
+    info!("Starting Lloom Accountant node...");
 
     // Load or generate identity
     let identity = load_or_generate_identity(args.private_key_file.as_deref()).await?;
@@ -95,8 +95,8 @@ async fn main() -> Result<()> {
     }
 
     // Subscribe to gossipsub topics
-    helpers::subscribe_topic(&mut swarm, "crowd-models/announcements")?;
-    helpers::subscribe_topic(&mut swarm, "crowd-models/executor-updates")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/announcements")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/executor-updates")?;
 
     // Register as an accountant in Kademlia
     let accountant_key = ServiceRole::Accountant.to_kad_key();

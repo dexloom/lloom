@@ -1,5 +1,5 @@
-//! Protocol definitions for the Crowd Models P2P network.
-//! 
+//! Protocol definitions for the Lloom P2P network.
+//!
 //! This module defines the message types and data structures used for
 //! communication between nodes in the network.
 
@@ -72,8 +72,8 @@ impl ServiceRole {
     /// Get the Kademlia key for this service role.
     pub fn to_kad_key(&self) -> Vec<u8> {
         match self {
-            ServiceRole::Executor => b"crowd-models/executor".to_vec(),
-            ServiceRole::Accountant => b"crowd-models/accountant".to_vec(),
+            ServiceRole::Executor => b"lloom/executor".to_vec(),
+            ServiceRole::Accountant => b"lloom/accountant".to_vec(),
         }
     }
 }
@@ -81,7 +81,7 @@ impl ServiceRole {
 /// Protocol constants.
 pub mod constants {
     /// The protocol ID for LLM request/response.
-    pub const LLM_PROTOCOL: &str = "/crowd-models/llm/1.0.0";
+    pub const LLM_PROTOCOL: &str = "/lloom/llm/1.0.0";
     
     /// Default timeout for LLM requests (in seconds).
     pub const DEFAULT_REQUEST_TIMEOUT: u64 = 300; // 5 minutes
@@ -232,8 +232,8 @@ mod tests {
         let executor_key = ServiceRole::Executor.to_kad_key();
         let accountant_key = ServiceRole::Accountant.to_kad_key();
 
-        assert_eq!(executor_key, b"crowd-models/executor".to_vec());
-        assert_eq!(accountant_key, b"crowd-models/accountant".to_vec());
+        assert_eq!(executor_key, b"lloom/executor".to_vec());
+        assert_eq!(accountant_key, b"lloom/accountant".to_vec());
         assert_ne!(executor_key, accountant_key);
     }
 
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_protocol_constants() {
-        assert_eq!(constants::LLM_PROTOCOL, "/crowd-models/llm/1.0.0");
+        assert_eq!(constants::LLM_PROTOCOL, "/lloom/llm/1.0.0");
         assert_eq!(constants::DEFAULT_REQUEST_TIMEOUT, 300);
         assert_eq!(constants::MAX_BATCH_SIZE, 100);
         assert_eq!(constants::BATCH_SUBMISSION_INTERVAL, 300);

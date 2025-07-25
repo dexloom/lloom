@@ -1,18 +1,18 @@
 [workspace]
 members = [
-    "crates/crowd-models-core",
-    "crates/crowd-models-client",
-    "crates/crowd-models-executor",
-    "crates/crowd-models-accountant",
+    "crates/lloom-core",
+    "crates/lloom-client",
+    "crates/lloom-executor",
+    "crates/lloom-accountant",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Crowd Models Team"]
+authors = ["Lloom Team"]
 license = "MIT"
-repository = "https://github.com/crowd-models/crowd-models"
+repository = "https://github.com/lloom/lloom"
 
 [workspace.dependencies]
 # Core dependencies

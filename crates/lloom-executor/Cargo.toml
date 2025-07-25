@@ -1,5 +1,5 @@
 [package]
-name = "crowd-models-executor"
+name = "lloom-executor"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,12 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "crowd-models-executor"
+name = "lloom-executor"
 path = "src/main.rs"
 
 [dependencies]
 # Core library
-crowd-models-core = { path = "../crowd-models-core" }
+lloom-core = { path = "../lloom-core" }
 
 # P2P networking
 libp2p.workspace = true

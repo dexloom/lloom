@@ -1,4 +1,4 @@
-# Example configuration file for Crowd Models Executor
+# Example configuration file for Lloom Executor
 # Copy this to config.toml and modify as needed
 
 # LLM backend configurations

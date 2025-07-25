@@ -1,5 +1,5 @@
 [package]
-name = "crowd-models-accountant"
+name = "lloom-accountant"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,12 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "crowd-models-accountant"
+name = "lloom-accountant"
 path = "src/main.rs"
 
 [dependencies]
 # Core library
-crowd-models-core = { path = "../crowd-models-core" }
+lloom-core = { path = "../lloom-core" }
 
 # Async runtime
 tokio.workspace = true

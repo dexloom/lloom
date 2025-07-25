@@ -1,4 +1,4 @@
-//! Message-level cryptographic signing for the Crowd Models P2P network.
+//! Message-level cryptographic signing for the Lloom P2P network.
 //!
 //! This module provides cryptographic signing and verification capabilities for protocol messages,
 //! ensuring non-repudiation and creating audit trails for all LLM requests and responses.

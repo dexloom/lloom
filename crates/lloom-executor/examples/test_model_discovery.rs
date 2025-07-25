@@ -3,7 +3,7 @@
 //! This example demonstrates how to use the ExecutorState to discover
 //! and manage models from all configured LLM backends.
 
-use crowd_models_executor::{
+use lloom_executor::{
     ExecutorConfig, LlmBackendConfig, BlockchainConfig, NetworkConfig,
     LlmClient, ModelInfo,
 };

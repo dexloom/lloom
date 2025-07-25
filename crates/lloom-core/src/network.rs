@@ -1,5 +1,5 @@
-//! Network behavior and event handling for the Crowd Models P2P network.
-//! 
+//! Network behavior and event handling for the Lloom P2P network.
+//!
 //! This module defines the composite libp2p NetworkBehaviour that combines
 //! various protocols for discovery, communication, and messaging.
 
@@ -154,8 +154,8 @@ mod tests {
         let executor_key = ServiceRole::Executor.to_kad_key();
         let accountant_key = ServiceRole::Accountant.to_kad_key();
         
-        assert_eq!(executor_key, b"crowd-models/executor");
-        assert_eq!(accountant_key, b"crowd-models/accountant");
+        assert_eq!(executor_key, b"lloom/executor");
+        assert_eq!(accountant_key, b"lloom/accountant");
         assert_ne!(executor_key, accountant_key);
     }
 

@@ -7,7 +7,7 @@
 //! 3. Run: cargo run --example test_lmstudio
 
 // Import from the executor library
-use crowd_models_executor::{LlmBackendConfig, LlmClient};
+use lloom_executor::{LlmBackendConfig, LlmClient};
 use tokio;
 
 #[tokio::main]

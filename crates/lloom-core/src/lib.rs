@@ -1,6 +1,6 @@
-//! # Crowd Models Core
-//! 
-//! This crate provides the core functionality for the Crowd Models P2P network,
+//! # Lloom Core
+//!
+//! This crate provides the core functionality for the Lloom P2P network,
 //! including identity management, networking protocols, and shared data structures.
 
 pub mod identity;

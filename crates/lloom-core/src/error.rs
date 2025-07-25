@@ -1,8 +1,8 @@
-//! Error types for the Crowd Models P2P network.
+//! Error types for the Lloom P2P network.
 
 use thiserror::Error;
 
-/// The main error type for the Crowd Models system.
+/// The main error type for the Lloom system.
 #[derive(Error, Debug)]
 pub enum Error {
     /// Network-related errors

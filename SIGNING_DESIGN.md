@@ -1,7 +1,7 @@
-# Message-Level Signing Design for Crowd Models
+# Message-Level Signing Design for Lloom
 
 ## Overview
-This document outlines the design for implementing message-level cryptographic signing for the Crowd Models P2P network. The goal is to ensure non-repudiation and create audit trails for all LLM requests and responses.
+This document outlines the design for implementing message-level cryptographic signing for the Lloom P2P network. The goal is to ensure non-repudiation and create audit trails for all LLM requests and responses.
 
 ## Architecture
 
