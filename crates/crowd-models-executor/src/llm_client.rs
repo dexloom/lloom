@@ -3,7 +3,7 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use reqwest::{Client, header};
-use std::time::Duration;
+use std::{time::Duration, collections::HashMap};
 use crate::config::LlmBackendConfig;
 
 /// OpenAI-compatible chat completion request
@@ -46,6 +46,85 @@ pub struct Usage {
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
+
+/// LMStudio-specific model information from /api/v0/models
+#[derive(Debug, Deserialize)]
+pub struct LmStudioModel {
+    pub id: String,
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    pub model_type: Option<String>,
+    #[allow(dead_code)]
+    pub state: Option<String>,
+    #[allow(dead_code)]
+    pub max_context_length: Option<u32>,
+    #[allow(dead_code)]
+    pub architecture: Option<String>,
+    #[allow(dead_code)]
+    pub size: Option<String>,
+}
+
+/// LMStudio models response structure
+#[derive(Debug, Deserialize)]
+pub struct LmStudioModelsResponse {
+    pub data: Vec<LmStudioModel>,
+}
+
+/// Enhanced usage information from LMStudio
+#[derive(Debug, Deserialize)]
+pub struct LmStudioUsage {
+    #[allow(dead_code)]
+    pub prompt_tokens: Option<u32>,
+    #[allow(dead_code)]
+    pub completion_tokens: Option<u32>,
+    pub total_tokens: u32,
+}
+
+/// LMStudio performance statistics
+#[derive(Debug, Deserialize)]
+pub struct LmStudioStats {
+    pub tokens_per_second: Option<f64>,
+    pub time_to_first_token: Option<f64>,
+    #[allow(dead_code)]
+    pub total_time: Option<f64>,
+}
+
+/// LMStudio model information in response
+#[derive(Debug, Deserialize)]
+pub struct LmStudioModelInfo {
+    #[allow(dead_code)]
+    pub id: Option<String>,
+    pub architecture: Option<String>,
+    #[allow(dead_code)]
+    pub size: Option<String>,
+}
+
+/// Enhanced response choice from LMStudio
+#[derive(Debug, Deserialize)]
+pub struct LmStudioChoice {
+    pub message: ChatMessage,
+    #[allow(dead_code)]
+    pub finish_reason: Option<String>,
+}
+
+/// LMStudio enhanced chat completion response
+#[derive(Debug, Deserialize)]
+pub struct LmStudioChatResponse {
+    pub choices: Vec<LmStudioChoice>,
+    pub usage: LmStudioUsage,
+    pub stats: Option<LmStudioStats>,
+    pub model_info: Option<LmStudioModelInfo>,
+}
+
+/// Unified model information structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub backend_name: String,
+    pub backend_type: String,
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
 
 /// Client for interacting with LLM backends
 pub struct LlmClient {
@@ -140,6 +219,190 @@ impl LlmClient {
         let token_count = completion.usage.total_tokens;
         
         Ok((content, token_count))
+    }
+    
+    /// Discover available models for LMStudio backends
+    pub async fn discover_lmstudio_models(&self) -> Result<Vec<String>> {
+        if !self.is_lmstudio_backend() {
+            return Err(anyhow!("Model discovery only supported for LMStudio backends"));
+        }
+        
+        let url = format!("{}/api/v0/models", self.backend_config.endpoint);
+        let response = self.http_client
+            .get(&url)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            return Err(anyhow!("Failed to fetch models from LMStudio: {}", response.status()));
+        }
+        
+        let models_response: LmStudioModelsResponse = response.json().await?;
+        let models: Vec<String> = models_response.data
+            .into_iter()
+            .map(|model| model.id)
+            .collect();
+            
+        Ok(models)
+    }
+    
+    /// Check if this backend is an LMStudio backend
+    pub fn is_lmstudio_backend(&self) -> bool {
+        self.backend_config.endpoint.contains("localhost:1234") ||
+        self.backend_config.name.to_lowercase().contains("lmstudio") ||
+        self.backend_config.endpoint.contains("/api/v0/")
+    }
+    
+    /// Execute a chat completion with LMStudio-specific enhancements
+    pub async fn lmstudio_chat_completion(
+        &self,
+        model: &str,
+        prompt: &str,
+        system_prompt: Option<&str>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<(String, u32, Option<LmStudioStats>, Option<LmStudioModelInfo>)> {
+        if !self.is_lmstudio_backend() {
+            // Fall back to regular chat completion for non-LMStudio backends
+            let (content, tokens) = self.chat_completion(model, prompt, system_prompt, temperature, max_tokens).await?;
+            return Ok((content, tokens, None, None));
+        }
+        
+        // Check if the model is supported
+        if !self.backend_config.supported_models.contains(&model.to_string()) {
+            return Err(anyhow!("Model {} not supported by backend {}", model, self.backend_config.name));
+        }
+        
+        // Build messages
+        let mut messages = vec![];
+        if let Some(system) = system_prompt {
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: system.to_string(),
+            });
+        }
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        });
+        
+        // Build request
+        let request = ChatCompletionRequest {
+            model: model.to_string(),
+            messages,
+            temperature,
+            max_tokens,
+        };
+        
+        // Make the request to LMStudio's enhanced endpoint
+        let url = format!("{}/chat/completions", self.backend_config.endpoint);
+        let response = self.http_client
+            .post(&url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(&request)
+            .send()
+            .await?;
+            
+        // Check status
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await?;
+            return Err(anyhow!("LMStudio API error ({}): {}", status, error_text));
+        }
+        
+        // Try to parse as LMStudio enhanced response first, fall back to regular response
+        let response_text = response.text().await?;
+        
+        if let Ok(lm_completion) = serde_json::from_str::<LmStudioChatResponse>(&response_text) {
+            // Enhanced LMStudio response
+            let content = lm_completion.choices
+                .first()
+                .map(|c| c.message.content.clone())
+                .ok_or_else(|| anyhow!("No completion choices returned"))?;
+                
+            let token_count = lm_completion.usage.total_tokens;
+            
+            Ok((content, token_count, lm_completion.stats, lm_completion.model_info))
+        } else {
+            // Fall back to regular OpenAI-compatible response
+            let completion: ChatCompletionResponse = serde_json::from_str(&response_text)?;
+            let content = completion.choices
+                .first()
+                .map(|c| c.message.content.clone())
+                .ok_or_else(|| anyhow!("No completion choices returned"))?;
+                
+            let token_count = completion.usage.total_tokens;
+            
+            Ok((content, token_count, None, None))
+        }
+    }
+    
+    /// Get available models from this backend with unified format
+    #[allow(dead_code)]
+    pub async fn get_available_models(&self) -> Result<Vec<ModelInfo>> {
+        let backend_type = if self.is_lmstudio_backend() {
+            "lmstudio"
+        } else {
+            "openai-compatible"
+        };
+
+        if self.is_lmstudio_backend() {
+            // For LMStudio, try to discover models dynamically
+            match self.discover_lmstudio_models().await {
+                Ok(discovered_models) => {
+                    let mut models = Vec::new();
+                    for model_id in discovered_models {
+                        let mut metadata = HashMap::new();
+                        metadata.insert("discovered".to_string(), serde_json::Value::Bool(true));
+                        
+                        models.push(ModelInfo {
+                            id: model_id,
+                            backend_name: self.backend_config.name.clone(),
+                            backend_type: backend_type.to_string(),
+                            metadata,
+                        });
+                    }
+                    Ok(models)
+                }
+                Err(e) => {
+                    // Fall back to configured models if discovery fails
+                    let mut models = Vec::new();
+                    for model_id in &self.backend_config.supported_models {
+                        let mut metadata = HashMap::new();
+                        metadata.insert("configured".to_string(), serde_json::Value::Bool(true));
+                        metadata.insert("discovery_error".to_string(), serde_json::Value::String(e.to_string()));
+                        
+                        models.push(ModelInfo {
+                            id: model_id.clone(),
+                            backend_name: self.backend_config.name.clone(),
+                            backend_type: backend_type.to_string(),
+                            metadata,
+                        });
+                    }
+                    Ok(models)
+                }
+            }
+        } else {
+            // For other backends, use configured models
+            let mut models = Vec::new();
+            for model_id in &self.backend_config.supported_models {
+                let mut metadata = HashMap::new();
+                metadata.insert("configured".to_string(), serde_json::Value::Bool(true));
+                if let Some(_) = self.backend_config.endpoint.strip_prefix("https://api.openai.com") {
+                    metadata.insert("official_openai".to_string(), serde_json::Value::Bool(true));
+                } else {
+                    metadata.insert("endpoint".to_string(), serde_json::Value::String(self.backend_config.endpoint.clone()));
+                }
+                
+                models.push(ModelInfo {
+                    id: model_id.clone(),
+                    backend_name: self.backend_config.name.clone(),
+                    backend_type: backend_type.to_string(),
+                    metadata,
+                });
+            }
+            Ok(models)
+        }
     }
 }
 

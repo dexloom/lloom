@@ -1,0 +1,39 @@
+# Test configuration file for comprehensive LLM provider testing
+# This tests multiple backend types including Mock provider
+
+[network]
+port = 9002
+external_address = "/ip4/127.0.0.1/tcp/9002"
+bootstrap_nodes = []
+announce_interval_secs = 300
+
+[blockchain]
+rpc_url = "https://rpc.sepolia.org"
+contract_address = "0x0000000000000000000000000000000000000000"
+gas_price_multiplier = 1.2
+batch_interval_secs = 300
+max_batch_size = 100
+
+# Mock provider for testing - this should return input + " Nice question!"
+[[llm_backends]]
+name = "mock"
+endpoint = "http://mock.example.com/v1"
+# No API key needed for mock
+supported_models = ["mock-gpt"]
+rate_limit = 100
+
+# OpenAI-compatible provider
+[[llm_backends]]
+name = "openai"
+endpoint = "https://api.openai.com/v1"
+# API key can be set via OPENAI_API_KEY environment variable
+supported_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"]
+rate_limit = 60
+
+# LMStudio local provider (if available)
+[[llm_backends]]
+name = "lmstudio"
+endpoint = "http://localhost:1234"
+# No API key needed for local LMStudio
+supported_models = ["llama-2-7b-chat", "mistral-7b-instruct"]
+rate_limit = 100

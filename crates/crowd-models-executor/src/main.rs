@@ -149,11 +149,35 @@ async fn main() -> Result<()> {
     
     // Initialize LLM clients
     let mut llm_clients = HashMap::new();
-    for backend_config in &config.llm_backends {
+    for backend_config in &mut config.llm_backends {
         match LlmClient::new(backend_config.clone()) {
             Ok(client) => {
+                // For LMStudio backends, try to discover available models
+                if client.is_lmstudio_backend() {
+                    match client.discover_lmstudio_models().await {
+                        Ok(discovered_models) => {
+                            if !discovered_models.is_empty() {
+                                info!("Discovered {} models from LMStudio: {:?}",
+                                      discovered_models.len(), discovered_models);
+                                // Update the backend config with discovered models if none were specified
+                                if backend_config.supported_models.is_empty() ||
+                                   backend_config.supported_models == vec!["llama-2-7b-chat", "mistral-7b-instruct", "your-loaded-model"] {
+                                    backend_config.supported_models = discovered_models;
+                                    info!("Updated {} backend with discovered models", backend_config.name);
+                                }
+                            } else {
+                                warn!("No models discovered from LMStudio backend {}", backend_config.name);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to discover models from LMStudio backend {}: {}", backend_config.name, e);
+                        }
+                    }
+                }
+                
                 llm_clients.insert(backend_config.name.clone(), client);
-                info!("Initialized LLM client for backend: {}", backend_config.name);
+                info!("Initialized LLM client for backend: {} with models: {:?}",
+                      backend_config.name, backend_config.supported_models);
             }
             Err(e) => {
                 warn!("Failed to initialize LLM client for {}: {}", backend_config.name, e);
@@ -546,16 +570,34 @@ async fn handle_llm_request(
         }
     };
     
-    // Execute the LLM request
-    match llm_client.chat_completion(
+    // Execute the LLM request with LMStudio enhancements if available
+    match llm_client.lmstudio_chat_completion(
         &request.model,
         &request.prompt,
         request.system_prompt.as_deref(),
         request.temperature,
         request.max_tokens,
     ).await {
-        Ok((content, token_count)) => {
-            info!("LLM request completed: {} tokens used", token_count);
+        Ok((content, token_count, stats, model_info)) => {
+            let mut log_msg = format!("LLM request completed: {} tokens used", token_count);
+            
+            // Log LMStudio-specific performance metrics if available
+            if let Some(stats) = &stats {
+                if let Some(tps) = stats.tokens_per_second {
+                    log_msg.push_str(&format!(", {:.2} tokens/sec", tps));
+                }
+                if let Some(ttft) = stats.time_to_first_token {
+                    log_msg.push_str(&format!(", {:.3}s to first token", ttft));
+                }
+            }
+            
+            if let Some(model_info) = &model_info {
+                if let Some(arch) = &model_info.architecture {
+                    log_msg.push_str(&format!(", architecture: {}", arch));
+                }
+            }
+            
+            info!("{}", log_msg);
             
             let response = LlmResponse {
                 content,
@@ -683,6 +725,7 @@ async fn submit_usage_batch(state: &mut ExecutorState) {
                     state.usage_records.extend(failed_records);
                 }
             }
+            
             Err(e) => {
                 error!("Failed to submit usage batch: {}", e);
                 // Add records back to the queue for retry
