@@ -11,7 +11,7 @@ use clap::Parser;
 use config::ExecutorConfig;
 use lloom_core::{
     identity::Identity,
-    network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
+    network::{LloomBehaviour, LloomEvent, helpers},
     protocol::{LlmRequest, LlmResponse, ServiceRole, UsageRecord, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
     signing::{SignableMessage},
 };
@@ -190,7 +190,7 @@ async fn main() -> Result<()> {
     }
     
     // Create network behaviour
-    let behaviour = LlmP2pBehaviour::new(&identity)?;
+    let behaviour = LloomBehaviour::new(&identity)?;
     
     // Build swarm
     let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
@@ -345,8 +345,8 @@ async fn main() -> Result<()> {
 
 /// Handle swarm events
 async fn handle_swarm_event(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
-    event: SwarmEvent<LlmP2pEvent>,
+    swarm: &mut Swarm<LloomBehaviour>,
+    event: SwarmEvent<LloomEvent>,
     state: &mut ExecutorState,
 ) {
     match event {
@@ -361,7 +361,7 @@ async fn handle_swarm_event(
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::RequestResponse(
+        SwarmEvent::Behaviour(LloomEvent::RequestResponse(
             request_response::Event::Message { message, peer, .. }
         )) => {
             match message {
@@ -373,7 +373,7 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad_event)) => {
+        SwarmEvent::Behaviour(LloomEvent::Kademlia(kad_event)) => {
             match kad_event {
                 kad::Event::OutboundQueryProgressed { result, .. } => {
                     match result {
@@ -405,7 +405,7 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Gossipsub(libp2p::gossipsub::Event::Message {
+        SwarmEvent::Behaviour(LloomEvent::Gossipsub(libp2p::gossipsub::Event::Message {
             message,
             ..
         })) => {
@@ -417,7 +417,7 @@ async fn handle_swarm_event(
 
 /// Handle an incoming request message (both signed and unsigned)
 async fn handle_request_message(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
+    swarm: &mut Swarm<LloomBehaviour>,
     request_message: RequestMessage,
     channel: ResponseChannel<ResponseMessage>,
     client_peer: libp2p::PeerId,
@@ -488,7 +488,7 @@ async fn handle_request_message(
 
 /// Handle an incoming LLM request
 async fn handle_llm_request(
-    _swarm: &mut Swarm<LlmP2pBehaviour>,
+    _swarm: &mut Swarm<LloomBehaviour>,
     request: LlmRequest,
     channel: ResponseChannel<ResponseMessage>,
     _client_peer: libp2p::PeerId,
@@ -672,7 +672,7 @@ async fn handle_llm_request(
 
 /// Announce executor availability
 async fn announce_executor(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
+    swarm: &mut Swarm<LloomBehaviour>,
     state: &ExecutorState,
 ) {
     // Re-announce in Kademlia

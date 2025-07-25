@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use lloom_core::{
     identity::Identity,
-    network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
+    network::{LloomBehaviour, LloomEvent, helpers},
     protocol::{LlmRequest, LlmResponse, ServiceRole, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
     signing::{SignableMessage},
 };
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     info!("Bootstrap nodes: {:?}", bootstrap_addrs);
     
     // Create network behaviour
-    let behaviour = LlmP2pBehaviour::new(&identity)?;
+    let behaviour = LloomBehaviour::new(&identity)?;
     
     // Build swarm
     let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
 
 /// Main client logic
 async fn run_client(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
+    swarm: &mut Swarm<LloomBehaviour>,
     args: &Args,
     state: &mut ClientState,
     identity: &Identity,
@@ -314,8 +314,8 @@ async fn run_client(
 
 /// Handle swarm events
 async fn handle_swarm_event(
-    _swarm: &mut Swarm<LlmP2pBehaviour>,
-    event: SwarmEvent<LlmP2pEvent>,
+    _swarm: &mut Swarm<LloomBehaviour>,
+    event: SwarmEvent<LloomEvent>,
     state: &mut ClientState,
     args: &Args,
     _identity: &Identity,
@@ -327,7 +327,7 @@ async fn handle_swarm_event(
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+        SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
             result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
             ..
         })) => {
@@ -341,7 +341,7 @@ async fn handle_swarm_event(
             }
             info!("DEBUG: Total known executors now: {}", state.discovered_executors.len());
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+        SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
             result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
             ..
         })) => {
@@ -353,13 +353,13 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+        SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
             result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. })),
             ..
         })) => {
             debug!("Kademlia provider query finished");
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::RequestResponse(
+        SwarmEvent::Behaviour(LloomEvent::RequestResponse(
             request_response::Event::Message {
                 message: request_response::Message::Response { response, request_id },
                 peer,
@@ -406,7 +406,7 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::RequestResponse(
+        SwarmEvent::Behaviour(LloomEvent::RequestResponse(
             request_response::Event::OutboundFailure { request_id, error, peer, .. }
         )) => {
             if let Some((pending_id, expected_peer)) = &state.pending_request {
@@ -419,7 +419,7 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Gossipsub(libp2p::gossipsub::Event::Message { message, .. })) => {
+        SwarmEvent::Behaviour(LloomEvent::Gossipsub(libp2p::gossipsub::Event::Message { message, .. })) => {
             debug!("Received gossipsub message on topic {:?}", message.topic);
             
             // Handle executor announcements
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn test_network_behavior_creation() {
         let identity = Identity::generate();
-        let result = LlmP2pBehaviour::new(&identity);
+        let result = LloomBehaviour::new(&identity);
         assert!(result.is_ok(), "Failed to create network behaviour: {:?}", result.err());
     }
 

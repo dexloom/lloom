@@ -17,35 +17,35 @@ use crate::error::Result;
 
 /// The custom event type that the behaviour will emit to the Swarm owner.
 #[derive(Debug)]
-pub enum LlmP2pEvent {
+pub enum LloomEvent {
     RequestResponse(request_response::Event<RequestMessage, ResponseMessage>),
     Kademlia(kad::Event),
     Gossipsub(gossipsub::Event),
 }
 
-// Implement From<T> for LlmP2pEvent for each inner event type
-impl From<request_response::Event<RequestMessage, ResponseMessage>> for LlmP2pEvent {
+// Implement From<T> for LloomEvent for each inner event type
+impl From<request_response::Event<RequestMessage, ResponseMessage>> for LloomEvent {
     fn from(event: request_response::Event<RequestMessage, ResponseMessage>) -> Self {
-        LlmP2pEvent::RequestResponse(event)
+        LloomEvent::RequestResponse(event)
     }
 }
 
-impl From<kad::Event> for LlmP2pEvent {
+impl From<kad::Event> for LloomEvent {
     fn from(event: kad::Event) -> Self {
-        LlmP2pEvent::Kademlia(event)
+        LloomEvent::Kademlia(event)
     }
 }
 
-impl From<gossipsub::Event> for LlmP2pEvent {
+impl From<gossipsub::Event> for LloomEvent {
     fn from(event: gossipsub::Event) -> Self {
-        LlmP2pEvent::Gossipsub(event)
+        LloomEvent::Gossipsub(event)
     }
 }
 
 /// The main network behaviour struct combining all protocols.
 #[derive(NetworkBehaviour)]
-#[behaviour(out_event = "LlmP2pEvent")]
-pub struct LlmP2pBehaviour {
+#[behaviour(out_event = "LloomEvent")]
+pub struct LloomBehaviour {
     /// Kademlia DHT for peer discovery.
     pub kademlia: kad::Behaviour<MemoryStore>,
     
@@ -56,7 +56,7 @@ pub struct LlmP2pBehaviour {
     pub request_response: request_response::cbor::Behaviour<RequestMessage, ResponseMessage>,
 }
 
-impl LlmP2pBehaviour {
+impl LloomBehaviour {
     /// Creates a new network behaviour with the given identity.
     pub fn new(identity: &crate::identity::Identity) -> Result<Self> {
         let peer_id = identity.peer_id;
@@ -111,7 +111,7 @@ pub mod helpers {
     
     /// Bootstrap the Kademlia DHT by adding known peers.
     pub fn bootstrap_kademlia(
-        swarm: &mut Swarm<LlmP2pBehaviour>,
+        swarm: &mut Swarm<LloomBehaviour>,
         bootstrap_peers: Vec<(libp2p::PeerId, Multiaddr)>,
     ) {
         for (peer_id, addr) in bootstrap_peers {
@@ -126,7 +126,7 @@ pub mod helpers {
     
     /// Subscribe to a gossipsub topic.
     pub fn subscribe_topic(
-        swarm: &mut Swarm<LlmP2pBehaviour>,
+        swarm: &mut Swarm<LloomBehaviour>,
         topic: &str,
     ) -> Result<()> {
         let topic = gossipsub::IdentTopic::new(topic);
@@ -145,7 +145,7 @@ mod tests {
     #[tokio::test]
     async fn test_llm_p2p_behaviour_creation() {
         let identity = Identity::generate();
-        let behaviour = LlmP2pBehaviour::new(&identity);
+        let behaviour = LloomBehaviour::new(&identity);
         assert!(behaviour.is_ok());
     }
 
@@ -162,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn test_behaviour_components() {
         let identity = Identity::generate();
-        let _behaviour = LlmP2pBehaviour::new(&identity).unwrap();
+        let _behaviour = LloomBehaviour::new(&identity).unwrap();
         
         // Ensure all components are properly initialized
         // This is a basic structural test - just verify the behaviour was created
@@ -176,7 +176,7 @@ mod tests {
         #[tokio::test]
         async fn test_subscribe_topic() -> Result<()> {
             let identity = Identity::generate();
-            let behaviour = LlmP2pBehaviour::new(&identity).unwrap();
+            let behaviour = LloomBehaviour::new(&identity).unwrap();
             
             let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
                 .with_tokio()
@@ -198,7 +198,7 @@ mod tests {
         #[tokio::test]
         async fn test_bootstrap_kademlia() -> Result<()> {
             let identity = Identity::generate();
-            let behaviour = LlmP2pBehaviour::new(&identity).unwrap();
+            let behaviour = LloomBehaviour::new(&identity).unwrap();
             
             let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
                 .with_tokio()

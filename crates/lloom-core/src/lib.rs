@@ -10,7 +10,7 @@ pub mod signing;
 pub mod error;
 
 pub use identity::Identity;
-pub use network::{LlmP2pBehaviour, LlmP2pEvent};
+pub use network::{LloomBehaviour, LloomEvent};
 pub use protocol::{LlmRequest, LlmResponse, UsageRecord, RequestMessage, ResponseMessage, SignedLlmRequest, SignedLlmResponse};
 pub use signing::{SignedMessage, SignableMessage, VerificationConfig, sign_message_blocking, verify_signed_message, verify_signed_message_basic, verify_signed_message_permissive};
 pub use error::{Error, Result};

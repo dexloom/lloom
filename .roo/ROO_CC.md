@@ -51,19 +51,19 @@ graph TD
 **Project Structure**: A monorepo containing a shared `core` library and separate binary crates for each role.
 
 ```
-llmp2p/
+lloom/
 ├── Cargo.toml                # Workspace definition
 ├── crates/
-│   ├── llmp2p-core/          # Shared logic (identity, networking)
+│   ├── lloom-core/          # Shared logic (identity, networking)
 │   │   ├── src/
 │   │   └── Cargo.toml
-│   ├── llmp2p-client/        # Binary for the Client role
+│   ├── lloom-client/        # Binary for the Client role
 │   │   ├── src/
 │   │   └── Cargo.toml
-│   ├── llmp2p-executor/      # Binary for the Executor role
+│   ├── lloom-executor/      # Binary for the Executor role
 │   │   ├── src/
 │   │   └── Cargo.toml
-│   └── llmp2p-validator/    # Binary for the Validator role
+│   └── lloom-validator/    # Binary for the Validator role
 │       ├── src/
 │       └── Cargo.toml
 ├── contracts/                  # Solidity smart contracts
@@ -75,15 +75,15 @@ llmp2p/
 ```toml
 [workspace]
 members = [
-    "crates/llmp2p-core",
-    "crates/llmp2p-client",
-    "crates/llmp2p-executor",
-    "crates/llmp2p-validator",
+    "crates/lloom-core",
+    "crates/lloom-client",
+    "crates/lloom-executor",
+    "crates/lloom-validator",
 ]
 resolver = "2"
 ```
 
-**Core Dependencies (`crates/llmp2p-core/Cargo.toml`)**:
+**Core Dependencies (`crates/lloom-core/Cargo.toml`)**:
 ```toml
 [dependencies]
 libp2p = { version = "0.53", features = ["tokio", "gossipsub", "mdns", "kad", "request-response", "noise", "yamux", "tcp"] }
@@ -94,10 +94,10 @@ anyhow = "1.0"
 tracing = "0.1"
 ```
 
-**Binary Dependencies (e.g., `crates/llmp2p-client/Cargo.toml`)**:
+**Binary Dependencies (e.g., `crates/lloom-client/Cargo.toml`)**:
 ```toml
 [dependencies]
-llmp2p-core = { path = "../llmp2p-core" }
+lloom-core = { path = "../lloom-core" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4.4", features = ["derive"] }
 tracing-subscriber = "0.3"
@@ -108,7 +108,7 @@ tracing-subscriber = "0.3"
 
 **Objective**: Create a unified cryptographic identity from a single private key for both network and on-chain operations.
 
-**Detailed Logic (`llmp2p-core/src/identity.rs`)**:
+**Detailed Logic (`lloom-core/src/identity.rs`)**:
 The `Identity` struct will be the cornerstone of a node's existence. The `libp2p::identity::Keypair` will be created by converting the raw bytes of the `alloy::Wallet`'s `secp256k1` key. This is possible because both systems use the same underlying cryptography.
 
 ```rust
@@ -158,7 +158,7 @@ impl Identity {
 
 **Objective**: Define a reusable, composite `NetworkBehaviour` that encapsulates all necessary P2P protocols.
 
-**Detailed Logic (`llmp2p-core/src/network.rs`)**:
+**Detailed Logic (`lloom-core/src/network.rs`)**:
 This struct combines protocols for discovery (`kademlia`), pub/sub messaging (`gossipsub`), and direct, stateful communication (`request_response`).
 
 ```rust
@@ -182,19 +182,19 @@ pub struct LlmResponse {
 
 // The custom event type that the behaviour will emit to the Swarm owner.
 #[derive(Debug)]
-pub enum LlmP2pEvent {
+pub enum LloomEvent {
     RequestResponse(request_response::Event<LlmRequest, LlmResponse>),
     Kademlia(kad::Event),
     Gossipsub(gossipsub::Event),
 }
 
-// Implement From<T> for LlmP2pEvent for each inner event type.
+// Implement From<T> for LloomEvent for each inner event type.
 // ...
 
 // The main network behaviour struct
 #[derive(NetworkBehaviour)]
-#[behaviour(out_event = "LlmP2pEvent")]
-pub struct LlmP2pBehaviour {
+#[behaviour(out_event = "LloomEvent")]
+pub struct LloomBehaviour {
     /// Kademlia DHT for peer discovery.
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     /// Gossipsub for broadcasting information.
@@ -242,11 +242,11 @@ sequenceDiagram
 
 ### Step 5: Executor: LLM Service Provider
 
-**Objective**: Implement the `llmp2p-executor` binary to serve requests and prepare accounting data.
+**Objective**: Implement the `lloom-executor` binary to serve requests and prepare accounting data.
 
 **Detailed Logic**:
 *   **Configuration**: A `config.toml` file will specify backend LLM APIs, keys, and supported models.
-*   **CLI**: `llmp2p-executor --private-key <HEX_KEY> --bootstrap-nodes <MULTIADDR_LIST> --config <PATH_TO_CONFIG>`
+*   **CLI**: `lloom-executor --private-key <HEX_KEY> --bootstrap-nodes <MULTIADDR_LIST> --config <PATH_TO_CONFIG>`
 *   **Main Loop**: An async `loop` with `tokio::select!` will concurrently handle:
     1.  `swarm.select_next_some()`: To process incoming network events.
     2.  `interval.tick()`: A periodic timer (e.g., 5 minutes) to trigger the blockchain submission batch.
@@ -260,10 +260,10 @@ sequenceDiagram
 
 ### Step 6: Client: LLM Service Consumer
 
-**Objective**: Implement the `llmp2p-client` as a simple and effective CLI tool.
+**Objective**: Implement the `lloom-client` as a simple and effective CLI tool.
 
 **Detailed Logic**:
-*   **CLI**: `llmp2p-client --private-key <HEX_KEY> --bootstrap-nodes <MULTIADDR_LIST> --model <MODEL_NAME> --prompt "Your prompt here"`
+*   **CLI**: `lloom-client --private-key <HEX_KEY> --bootstrap-nodes <MULTIADDR_LIST> --model <MODEL_NAME> --prompt "Your prompt here"`
 *   **Workflow**:
     1.  **Init**: Load `Identity`, initialize `Swarm`.
     2.  **Discover**: Call `kademlia.get_providers()` and collect responses for a few seconds. If none, exit with an error.
@@ -274,10 +274,10 @@ sequenceDiagram
 
 ### Step 7: Validator: Discovery Supernode
 
-**Objective**: Implement the `llmp2p-validator` as a stable, "boring" network anchor.
+**Objective**: Implement the `lloom-validator` as a stable, "boring" network anchor.
 
 **Detailed Logic**:
-*   **CLI**: `llmp2p-validator --private-key <STATIC_KEY> --listen-address /ip4/0.0.0.0/tcp/4001`
+*   **CLI**: `lloom-validator --private-key <STATIC_KEY> --listen-address /ip4/0.0.0.0/tcp/4001`
 *   **Implementation**: The `main` function will initialize the `Identity` and `Swarm`, call `swarm.listen_on()`, and then enter a simple `loop { swarm.select_next_some().await; }`. There is no other logic required. Its stability and public address are its features.
 
 ### Step 8: Blockchain Integration: Accounting Smart Contract
@@ -348,7 +348,7 @@ contract Accounting {
 **Objective**: Implement the Executor's logic for reliably and efficiently submitting usage data.
 
 **Detailed Logic**:
-*   **ABI Generation**: The contract's ABI will be generated during compilation (e.g., with Foundry) and included in the `llmp2p-executor` crate.
+*   **ABI Generation**: The contract's ABI will be generated during compilation (e.g., with Foundry) and included in the `lloom-executor` crate.
 *   **Type-Safe Interface**: `alloy`'s `sol!` macro will be used to create a Rust interface from the ABI.
     ```rust
     sol!(

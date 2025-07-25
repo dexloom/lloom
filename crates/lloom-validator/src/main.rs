@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use lloom_core::{
     identity::Identity,
-    network::{LlmP2pBehaviour, LlmP2pEvent, helpers},
+    network::{LloomBehaviour, LloomEvent, helpers},
     protocol::ServiceRole,
 };
 use futures::StreamExt;
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     info!("EVM address: {}", identity.evm_address);
 
     // Create the network behaviour
-    let behaviour = LlmP2pBehaviour::new(&identity)?;
+    let behaviour = LloomBehaviour::new(&identity)?;
 
     // Build the swarm
     let mut swarm = SwarmBuilder::with_existing_identity(identity.p2p_keypair.clone())
@@ -169,8 +169,8 @@ async fn load_or_generate_identity(key_file: Option<&std::path::Path>) -> Result
 
 /// Handle swarm events
 async fn handle_swarm_event(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
-    event: SwarmEvent<LlmP2pEvent>,
+    swarm: &mut Swarm<LloomBehaviour>,
+    event: SwarmEvent<LloomEvent>,
     known_executors: &mut HashSet<libp2p::PeerId>,
 ) {
     match event {
@@ -185,7 +185,7 @@ async fn handle_swarm_event(
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+        SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
             result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
             ..
         })) => {
@@ -197,13 +197,13 @@ async fn handle_swarm_event(
                 }
             }
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Kademlia(kad::Event::InboundRequest { 
+        SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::InboundRequest {
             request: kad::InboundRequest::GetRecord { .. }, 
             .. 
         })) => {
             debug!("Received Kademlia GetRecord request");
         }
-        SwarmEvent::Behaviour(LlmP2pEvent::Gossipsub(libp2p::gossipsub::Event::Message {
+        SwarmEvent::Behaviour(LloomEvent::Gossipsub(libp2p::gossipsub::Event::Message {
             propagation_source,
             message,
             ..
@@ -219,7 +219,7 @@ async fn handle_swarm_event(
 
 /// Perform periodic maintenance tasks
 async fn perform_periodic_tasks(
-    swarm: &mut Swarm<LlmP2pBehaviour>,
+    swarm: &mut Swarm<LloomBehaviour>,
     known_executors: &HashSet<libp2p::PeerId>,
 ) {
     // Refresh our validator registration
@@ -376,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_behavior_creation() {
         let identity = Identity::generate();
-        let result = LlmP2pBehaviour::new(&identity);
+        let result = LloomBehaviour::new(&identity);
         assert!(result.is_ok(), "Failed to create network behaviour: {:?}", result.err());
     }
 
