@@ -1,7 +1,7 @@
 [profile.default]
 src = "solidity/src"
 out = "solidity/out"
-libs = ["lib"]
+libs = ["solidity/lib"]
 test = "solidity/test"
 script = "solidity/script"
 solc = "0.8.20"

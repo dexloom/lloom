@@ -4,7 +4,11 @@ executor provide model and price for inbound and outboud tokens. This price is b
 
 Sending request client signs hash of request along with those prices and also address of executor. We also need nonce field. 
 
+I want thiose parameters were fields LlmRequest and LlmResponse structures. 
+
 Executor verifies signature process request, counts inbound and oputboud tokens signs this information and sends to smart contract. 
+
+
 
 Smart contract needs function processRequest and proicessRequestSigned that implements eip712 logic.
 
@@ -14,6 +18,10 @@ processRequestSigned verifies both signatures.
 
 Please develop and implement eip-712 scheme. 
 
+I want you to move blockchain part to core or other place and implement following logic. 
 
 
-I want you to move blockchain part to core or other place and implement 
+
+
+
+Blockcahin will be used for all three types of clients: executor, validator and client. 
