@@ -1,7 +1,9 @@
 [profile.default]
-src = "contracts"
-out = "out"
+src = "solidity/src"
+out = "solidity/out"
 libs = ["lib"]
+test = "solidity/test"
+script = "solidity/script"
 solc = "0.8.20"
 
 # See more config options https://github.com/foundry-rs/foundry/tree/master/config
