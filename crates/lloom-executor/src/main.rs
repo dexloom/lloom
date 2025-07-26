@@ -449,7 +449,9 @@ async fn handle_request_message(
                         // Send error response for invalid signature
                         let error_response = LlmResponse {
                             content: String::new(),
-                            token_count: 0,
+                            inbound_tokens: 0,
+                            outbound_tokens: 0,
+                            total_cost: "0".to_string(),
                             model_used: signed_request.payload.model.clone(),
                             error: Some(format!("Signature verification failed: {}", e)),
                         };
@@ -510,7 +512,9 @@ async fn handle_llm_request(
                    model, state.config.get_all_supported_models());
             let error_response = LlmResponse {
                 content: String::new(),
-                token_count: 0,
+                inbound_tokens: 0,
+                outbound_tokens: 0,
+                total_cost: "0".to_string(),
                 model_used: model.clone(),
                 error: Some(format!("Model {} not supported", model)),
             };
@@ -543,7 +547,9 @@ async fn handle_llm_request(
         None => {
             let error_response = LlmResponse {
                 content: String::new(),
-                token_count: 0,
+                inbound_tokens: 0,
+                outbound_tokens: 0,
+                total_cost: "0".to_string(),
                 model_used: model.clone(),
                 error: Some(format!("Backend {} not available", backend_name)),
             };
@@ -601,7 +607,9 @@ async fn handle_llm_request(
             
             let response = LlmResponse {
                 content,
-                token_count,
+                inbound_tokens: (token_count / 2) as u64,  // Rough estimate - could be improved
+                outbound_tokens: (token_count / 2) as u64,
+                total_cost: format!("{}", (token_count as u64) * 1000000000000000u64), // 0.001 ETH per token
                 model_used: model.clone(),
                 error: None,
             };
@@ -643,7 +651,9 @@ async fn handle_llm_request(
             
             let error_response = LlmResponse {
                 content: String::new(),
-                token_count: 0,
+                inbound_tokens: 0,
+                outbound_tokens: 0,
+                total_cost: "0".to_string(),
                 model_used: model,
                 error: Some(e.to_string()),
             };

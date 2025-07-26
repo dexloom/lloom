@@ -26,6 +26,11 @@ pub mod client_utils {
         system_prompt: Option<String>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
+        executor_address: String,
+        inbound_price: String,
+        outbound_price: String,
+        nonce: u64,
+        deadline: u64,
     ) -> LlmRequest {
         LlmRequest {
             model,
@@ -33,6 +38,11 @@ pub mod client_utils {
             system_prompt,
             temperature,
             max_tokens,
+            executor_address,
+            inbound_price,
+            outbound_price,
+            nonce,
+            deadline,
         }
     }
 
@@ -61,11 +71,13 @@ pub mod client_utils {
     pub fn format_response(
         content: &str,
         model_used: &str,
-        token_count: u32,
+        inbound_tokens: u64,
+        outbound_tokens: u64,
+        total_cost: &str,
     ) -> String {
         format!(
-            "Model: {}\nTokens: {}\n---\n{}",
-            model_used, token_count, content
+            "Model: {}\nInbound Tokens: {}\nOutbound Tokens: {}\nTotal Cost: {} wei\n---\n{}",
+            model_used, inbound_tokens, outbound_tokens, total_cost, content
         )
     }
 }
@@ -121,6 +133,11 @@ mod tests {
             None,
             None,
             None,
+            "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            "500000000000000".to_string(),
+            "1000000000000000".to_string(),
+            1,
+            1234567890,
         );
         
         assert_eq!(request.model, "gpt-3.5-turbo");
@@ -128,6 +145,11 @@ mod tests {
         assert_eq!(request.system_prompt, None);
         assert_eq!(request.temperature, None);
         assert_eq!(request.max_tokens, None);
+        assert_eq!(request.executor_address, "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a");
+        assert_eq!(request.inbound_price, "500000000000000");
+        assert_eq!(request.outbound_price, "1000000000000000");
+        assert_eq!(request.nonce, 1);
+        assert_eq!(request.deadline, 1234567890);
     }
 
     #[test]
@@ -138,6 +160,11 @@ mod tests {
             Some("You are a helpful assistant".to_string()),
             Some(0.7),
             Some(100),
+            "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            "500000000000000".to_string(),
+            "1000000000000000".to_string(),
+            2,
+            1234567891,
         );
         
         assert_eq!(request.model, "gpt-4");
@@ -145,6 +172,11 @@ mod tests {
         assert_eq!(request.system_prompt, Some("You are a helpful assistant".to_string()));
         assert_eq!(request.temperature, Some(0.7));
         assert_eq!(request.max_tokens, Some(100));
+        assert_eq!(request.executor_address, "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a");
+        assert_eq!(request.inbound_price, "500000000000000");
+        assert_eq!(request.outbound_price, "1000000000000000");
+        assert_eq!(request.nonce, 2);
+        assert_eq!(request.deadline, 1234567891);
     }
 
     #[test]
@@ -190,27 +222,31 @@ mod tests {
         let formatted = format_response(
             "This is a test response",
             "gpt-3.5-turbo",
-            15,
+            10,
+            5,
+            "15000000000000000",
         );
         
-        let expected = "Model: gpt-3.5-turbo\nTokens: 15\n---\nThis is a test response";
+        let expected = "Model: gpt-3.5-turbo\nInbound Tokens: 10\nOutbound Tokens: 5\nTotal Cost: 15000000000000000 wei\n---\nThis is a test response";
         assert_eq!(formatted, expected);
     }
 
     #[test]
     fn test_format_response_empty_content() {
-        let formatted = format_response("", "gpt-4", 0);
-        let expected = "Model: gpt-4\nTokens: 0\n---\n";
+        let formatted = format_response("", "gpt-4", 0, 0, "0");
+        let expected = "Model: gpt-4\nInbound Tokens: 0\nOutbound Tokens: 0\nTotal Cost: 0 wei\n---\n";
         assert_eq!(formatted, expected);
     }
 
     #[test]
     fn test_format_response_long_content() {
         let long_content = "This is a very long response ".repeat(10);
-        let formatted = format_response(&long_content, "gpt-4-turbo", 300);
+        let formatted = format_response(&long_content, "gpt-4-turbo", 200, 100, "300000000000000000");
         
         assert!(formatted.contains("Model: gpt-4-turbo"));
-        assert!(formatted.contains("Tokens: 300"));
+        assert!(formatted.contains("Inbound Tokens: 200"));
+        assert!(formatted.contains("Outbound Tokens: 100"));
+        assert!(formatted.contains("Total Cost: 300000000000000000 wei"));
         assert!(formatted.contains(&long_content));
     }
 }

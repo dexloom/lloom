@@ -165,7 +165,9 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             } else {
                 println!("Model: {}", response.model_used);
-                println!("Tokens: {}", response.token_count);
+                println!("Inbound Tokens: {}", response.inbound_tokens);
+                println!("Outbound Tokens: {}", response.outbound_tokens);
+                println!("Total Cost: {}", response.total_cost);
                 println!("---");
                 println!("{}", response.content);
             }
@@ -264,6 +266,14 @@ async fn run_client(
                         system_prompt: args.system_prompt.clone(),
                         temperature: args.temperature,
                         max_tokens: args.max_tokens,
+                        executor_address: selected_executor.to_string(),
+                        inbound_price: "500000000000000".to_string(), // 0.0005 ETH per token
+                        outbound_price: "1000000000000000".to_string(), // 0.001 ETH per token
+                        nonce: 1,
+                        deadline: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() + 300, // 5 minutes from now
                     };
                     
                     info!("Phase 3: Sending request to executor: {}", selected_executor);
@@ -371,7 +381,8 @@ async fn handle_swarm_event(
                     // Handle both signed and unsigned responses
                     let llm_response = match &response {
                         ResponseMessage::LlmResponse(resp) => {
-                            info!("Received unsigned response from {}: {} tokens", peer, resp.token_count);
+                            info!("Received unsigned response from {}: {} inbound + {} outbound tokens",
+                                  peer, resp.inbound_tokens, resp.outbound_tokens);
                             Some(resp.clone())
                         }
                         ResponseMessage::SignedLlmResponse(signed_resp) => {
@@ -382,19 +393,22 @@ async fn handle_swarm_event(
                                 match signed_resp.verify_with_time_window(MAX_MESSAGE_AGE_SECS) {
                                     Ok(signer_address) => {
                                         info!("✓ Response signature verified from signer: {}", signer_address);
-                                        info!("Response content: {} tokens", signed_resp.payload.token_count);
+                                        info!("Response content: {} inbound + {} outbound tokens",
+                                              signed_resp.payload.inbound_tokens, signed_resp.payload.outbound_tokens);
                                         Some(signed_resp.payload.clone())
                                     }
                                     Err(e) => {
                                         error!("✗ Response signature verification failed: {}", e);
                                         warn!("Response may be tampered with or from untrusted source");
                                         // Still process the response but log the security issue
-                                        info!("Processing unverified response: {} tokens", signed_resp.payload.token_count);
+                                        info!("Processing unverified response: {} inbound + {} outbound tokens",
+                                              signed_resp.payload.inbound_tokens, signed_resp.payload.outbound_tokens);
                                         Some(signed_resp.payload.clone())
                                     }
                                 }
                             } else {
-                                info!("Signature verification disabled, processing response: {} tokens", signed_resp.payload.token_count);
+                                info!("Signature verification disabled, processing response: {} inbound + {} outbound tokens",
+                                      signed_resp.payload.inbound_tokens, signed_resp.payload.outbound_tokens);
                                 Some(signed_resp.payload.clone())
                             }
                         }
@@ -539,8 +553,10 @@ mod tests {
         // Set response
         let response = LlmResponse {
             content: "Test response".to_string(),
+            inbound_tokens: 5,
+            outbound_tokens: 5,
+            total_cost: "10000000000000000".to_string(),
             model_used: "gpt-3.5-turbo".to_string(),
-            token_count: 10,
             error: None,
         };
         state.response_received = Some(response.clone());
@@ -615,6 +631,11 @@ mod tests {
             system_prompt: Some("System message".to_string()),
             temperature: Some(0.8),
             max_tokens: Some(150),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
         
         assert_eq!(request.model, "gpt-4");
@@ -628,21 +649,26 @@ mod tests {
     fn test_llm_response_creation() {
         let response = LlmResponse {
             content: "Generated text".to_string(),
+            inbound_tokens: 10,
+            outbound_tokens: 15,
+            total_cost: "25000000000000000".to_string(),
             model_used: "gpt-3.5-turbo".to_string(),
-            token_count: 25,
             error: None,
         };
         
         assert_eq!(response.content, "Generated text");
         assert_eq!(response.model_used, "gpt-3.5-turbo");
-        assert_eq!(response.token_count, 25);
+        assert_eq!(response.inbound_tokens, 10);
+        assert_eq!(response.outbound_tokens, 15);
         assert_eq!(response.error, None);
         
         // Test with error
         let error_response = LlmResponse {
             content: String::new(),
+            inbound_tokens: 0,
+            outbound_tokens: 0,
+            total_cost: "0".to_string(),
             model_used: "gpt-3.5-turbo".to_string(),
-            token_count: 0,
             error: Some("API error".to_string()),
         };
         

@@ -414,6 +414,11 @@ mod tests {
             system_prompt: Some("System prompt".to_string()),
             temperature: Some(0.7),
             max_tokens: Some(150),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         let signed_request = request.sign_blocking(&signer).unwrap();
@@ -428,7 +433,9 @@ mod tests {
         let signer = create_test_signer();
         let response = LlmResponse {
             content: "Generated response".to_string(),
-            token_count: 25,
+            inbound_tokens: 15,
+            outbound_tokens: 10,
+            total_cost: "25000000000000000".to_string(),
             model_used: "gpt-4".to_string(),
             error: None,
         };

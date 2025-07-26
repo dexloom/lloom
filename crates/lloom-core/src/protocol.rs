@@ -20,6 +20,16 @@ pub struct LlmRequest {
     pub temperature: Option<f32>,
     /// Maximum tokens to generate.
     pub max_tokens: Option<u32>,
+    /// Ethereum address of the executor node
+    pub executor_address: String,
+    /// Price per inbound token in wei (UINT256 as string)
+    pub inbound_price: String,
+    /// Price per outbound token in wei (UINT256 as string)
+    pub outbound_price: String,
+    /// Client nonce for replay protection
+    pub nonce: u64,
+    /// Unix timestamp deadline for request validity
+    pub deadline: u64,
 }
 
 /// A response sent from an Executor to a Client.
@@ -27,8 +37,12 @@ pub struct LlmRequest {
 pub struct LlmResponse {
     /// The generated content from the model.
     pub content: String,
-    /// The total number of tokens used (prompt + completion).
-    pub token_count: u32,
+    /// Number of tokens in the prompt (input)
+    pub inbound_tokens: u64,
+    /// Number of tokens in the response (output)
+    pub outbound_tokens: u64,
+    /// Total cost in wei (UINT256 as string)
+    pub total_cost: String,
     /// The model that was actually used.
     pub model_used: String,
     /// Optional error message if the request failed.
@@ -138,6 +152,11 @@ mod tests {
             system_prompt: Some("You are a helpful assistant".to_string()),
             temperature: Some(0.7),
             max_tokens: Some(150),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         assert_eq!(request.model, "gpt-3.5-turbo");
@@ -155,6 +174,11 @@ mod tests {
             system_prompt: None,
             temperature: None,
             max_tokens: None,
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(), // 0.0005 ETH per token
+            outbound_price: "1000000000000000".to_string(), // 0.001 ETH per token
+            nonce: 2,
+            deadline: 1234567891,
         };
 
         assert_eq!(request.model, "gpt-4");
@@ -162,19 +186,28 @@ mod tests {
         assert!(request.system_prompt.is_none());
         assert!(request.temperature.is_none());
         assert!(request.max_tokens.is_none());
+        assert_eq!(request.executor_address, "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a");
+        assert_eq!(request.inbound_price, "500000000000000");
+        assert_eq!(request.outbound_price, "1000000000000000");
+        assert_eq!(request.nonce, 2);
+        assert_eq!(request.deadline, 1234567891);
     }
 
     #[test]
     fn test_llm_response_success() {
         let response = LlmResponse {
             content: "Generated content".to_string(),
-            token_count: 42,
+            inbound_tokens: 20,
+            outbound_tokens: 22,
+            total_cost: "62000000000000000".to_string(), // 20 * 0.001 + 22 * 0.002 = 0.064 ETH
             model_used: "gpt-3.5-turbo".to_string(),
             error: None,
         };
 
         assert_eq!(response.content, "Generated content");
-        assert_eq!(response.token_count, 42);
+        assert_eq!(response.inbound_tokens, 20);
+        assert_eq!(response.outbound_tokens, 22);
+        assert_eq!(response.total_cost, "62000000000000000");
         assert_eq!(response.model_used, "gpt-3.5-turbo");
         assert!(response.error.is_none());
     }
@@ -183,13 +216,17 @@ mod tests {
     fn test_llm_response_error() {
         let response = LlmResponse {
             content: String::new(),
-            token_count: 0,
+            inbound_tokens: 0,
+            outbound_tokens: 0,
+            total_cost: "0".to_string(),
             model_used: "gpt-4".to_string(),
             error: Some("API rate limit exceeded".to_string()),
         };
 
         assert!(response.content.is_empty());
-        assert_eq!(response.token_count, 0);
+        assert_eq!(response.inbound_tokens, 0);
+        assert_eq!(response.outbound_tokens, 0);
+        assert_eq!(response.total_cost, "0");
         assert_eq!(response.error, Some("API rate limit exceeded".to_string()));
     }
 
@@ -252,6 +289,11 @@ mod tests {
             system_prompt: Some("System".to_string()),
             temperature: Some(0.5),
             max_tokens: Some(100),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         let serialized = serde_json::to_string(&request).unwrap();
@@ -262,13 +304,20 @@ mod tests {
         assert_eq!(request.system_prompt, deserialized.system_prompt);
         assert_eq!(request.temperature, deserialized.temperature);
         assert_eq!(request.max_tokens, deserialized.max_tokens);
+        assert_eq!(request.executor_address, deserialized.executor_address);
+        assert_eq!(request.inbound_price, deserialized.inbound_price);
+        assert_eq!(request.outbound_price, deserialized.outbound_price);
+        assert_eq!(request.nonce, deserialized.nonce);
+        assert_eq!(request.deadline, deserialized.deadline);
     }
 
     #[test]
     fn test_serialization_llm_response() {
         let response = LlmResponse {
             content: "Response content".to_string(),
-            token_count: 25,
+            inbound_tokens: 10,
+            outbound_tokens: 15,
+            total_cost: "25000000000000000".to_string(),
             model_used: "gpt-4".to_string(),
             error: None,
         };
@@ -277,7 +326,9 @@ mod tests {
         let deserialized: LlmResponse = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(response.content, deserialized.content);
-        assert_eq!(response.token_count, deserialized.token_count);
+        assert_eq!(response.inbound_tokens, deserialized.inbound_tokens);
+        assert_eq!(response.outbound_tokens, deserialized.outbound_tokens);
+        assert_eq!(response.total_cost, deserialized.total_cost);
         assert_eq!(response.model_used, deserialized.model_used);
         assert_eq!(response.error, deserialized.error);
     }
@@ -336,6 +387,11 @@ mod tests {
             system_prompt: None,
             temperature: Some(0.8),
             max_tokens: Some(200),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         let cloned = original.clone();
@@ -350,14 +406,18 @@ mod tests {
     fn test_llm_response_clone() {
         let original = LlmResponse {
             content: "Clone test response".to_string(),
-            token_count: 15,
+            inbound_tokens: 5,
+            outbound_tokens: 10,
+            total_cost: "15000000000000000".to_string(),
             model_used: "gpt-3.5-turbo".to_string(),
             error: Some("Test error".to_string()),
         };
 
         let cloned = original.clone();
         assert_eq!(original.content, cloned.content);
-        assert_eq!(original.token_count, cloned.token_count);
+        assert_eq!(original.inbound_tokens, cloned.inbound_tokens);
+        assert_eq!(original.outbound_tokens, cloned.outbound_tokens);
+        assert_eq!(original.total_cost, cloned.total_cost);
         assert_eq!(original.model_used, cloned.model_used);
         assert_eq!(original.error, cloned.error);
     }
@@ -377,6 +437,11 @@ mod tests {
             system_prompt: None,
             temperature: Some(0.5),
             max_tokens: Some(100),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         let signed_request = request.sign_blocking(&signer).unwrap();
@@ -398,7 +463,9 @@ mod tests {
 
         let response = LlmResponse {
             content: "Test response".to_string(),
-            token_count: 10,
+            inbound_tokens: 5,
+            outbound_tokens: 5,
+            total_cost: "10000000000000000".to_string(),
             model_used: "gpt-4".to_string(),
             error: None,
         };
@@ -406,7 +473,8 @@ mod tests {
         let signed_response = response.sign_blocking(&signer).unwrap();
         
         assert_eq!(signed_response.payload.content, "Test response");
-        assert_eq!(signed_response.payload.token_count, 10);
+        assert_eq!(signed_response.payload.inbound_tokens, 5);
+        assert_eq!(signed_response.payload.outbound_tokens, 5);
         assert_eq!(signed_response.signer, signer.address());
         assert!(signed_response.signature.len() == 65);
     }
@@ -452,6 +520,11 @@ mod tests {
             system_prompt: None,
             temperature: None,
             max_tokens: None,
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         // Test that the type alias works
@@ -460,7 +533,9 @@ mod tests {
 
         let response = LlmResponse {
             content: "Response content".to_string(),
-            token_count: 15,
+            inbound_tokens: 7,
+            outbound_tokens: 8,
+            total_cost: "15000000000000000".to_string(),
             model_used: "gpt-4".to_string(),
             error: None,
         };
@@ -495,6 +570,11 @@ mod tests {
             system_prompt: Some("System".to_string()),
             temperature: Some(0.8),
             max_tokens: Some(200),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".to_string(),
+            inbound_price: "500000000000000".to_string(),
+            outbound_price: "1000000000000000".to_string(),
+            nonce: 1,
+            deadline: 1234567890,
         };
 
         let signed_request = request.sign_blocking(&signer).unwrap();
