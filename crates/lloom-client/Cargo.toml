@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Client library and CLI tool for requesting LLM services from the Lloom P2P network"
+documentation = "https://docs.rs/lloom-client"
+keywords = ["p2p", "llm", "client", "cli", "ai"]
+categories = ["command-line-utilities", "network-programming", "web-programming"]
 
 [[bin]]
 name = "lloom-client"
@@ -32,7 +36,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-chrono = { version = "0.4", features = ["serde"] }
+chrono.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true

@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Core functionality for the Lloom P2P network including identity management, networking protocols, and cryptographic signing"
+documentation = "https://docs.rs/lloom-core"
+keywords = ["p2p", "llm", "blockchain", "libp2p", "eip712"]
+categories = ["network-programming", "cryptography", "web-programming"]
 
 [dependencies]
 # P2P networking
@@ -31,7 +35,7 @@ tracing.workspace = true
 # Cryptography
 hex.workspace = true
 rand.workspace = true
-k256 = { version = "0.13", features = ["ecdsa"] }
+k256.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true

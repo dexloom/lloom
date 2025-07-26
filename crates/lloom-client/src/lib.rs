@@ -1,10 +1,45 @@
-//! Lloom Client Library
+//! # Lloom Client Library
 //!
-//! This crate provides functionality for the client application.
+//! This crate provides reusable components for interacting with the Lloom P2P network
+//! to request LLM services. It includes utilities for request validation, executor
+//! selection, and response formatting.
+//!
+//! ## Usage
+//!
+//! ### As a Library
+//!
+//! Use this crate to build custom client applications:
+//!
+//! ```rust,no_run
+//! use lloom_client::validation::{validate_temperature, validate_max_tokens};
+//! use lloom_client::request::create_llm_request;
+//!
+//! // Validate parameters
+//! assert!(validate_temperature(0.7));
+//! assert!(validate_max_tokens(100));
+//!
+//! // Create a request
+//! let request = create_llm_request(
+//!     "gpt-3.5-turbo".to_string(),
+//!     "Hello world".to_string(),
+//!     None, None, None,
+//!     "0x123...".to_string(),
+//!     "500000000000000".to_string(),
+//!     "1000000000000000".to_string(),
+//!     1, 1234567890
+//! );
+//! ```
+//!
+//! ### As a Binary
+//!
+//! Run the included binary for direct command-line usage:
+//!
+//! ```bash
+//! lloom-client --bootstrap-nodes /ip4/127.0.0.1/tcp/9000 --prompt "Hello world"
+//! ```
 
-pub mod client_utils {
-    use lloom_core::protocol::LlmRequest;
-
+/// Network and protocol utilities for client operations
+pub mod network {
     /// Validate and parse bootstrap node addresses
     pub fn parse_bootstrap_nodes(addrs: &[String]) -> std::result::Result<Vec<String>, String> {
         for addr_str in addrs {
@@ -18,6 +53,22 @@ pub mod client_utils {
         }
         Ok(addrs.to_vec())
     }
+
+    /// Select the best executor from a set of discovered executors
+    pub fn select_executor_index(executor_count: usize) -> Option<usize> {
+        // For now, just select the first one (index 0)
+        // In a real implementation, this could consider latency, load, reputation, etc.
+        if executor_count > 0 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+}
+
+/// Request creation and management utilities
+pub mod request {
+    use lloom_core::protocol::LlmRequest;
 
     /// Create an LLM request from command line arguments
     pub fn create_llm_request(
@@ -45,7 +96,10 @@ pub mod client_utils {
             deadline,
         }
     }
+}
 
+/// Parameter validation utilities
+pub mod validation {
     /// Validate temperature parameter
     pub fn validate_temperature(temp: f32) -> bool {
         temp >= 0.0 && temp <= 2.0
@@ -55,18 +109,10 @@ pub mod client_utils {
     pub fn validate_max_tokens(max_tokens: u32) -> bool {
         max_tokens > 0 && max_tokens <= 4096
     }
+}
 
-    /// Select the best executor from a set of discovered executors
-    pub fn select_executor_index(executor_count: usize) -> Option<usize> {
-        // For now, just select the first one (index 0)
-        // In a real implementation, this could consider latency, load, reputation, etc.
-        if executor_count > 0 {
-            Some(0)
-        } else {
-            None
-        }
-    }
-
+/// Response formatting utilities
+pub mod response {
     /// Format response for display
     pub fn format_response(
         content: &str,
@@ -82,9 +128,18 @@ pub mod client_utils {
     }
 }
 
+// Backward compatibility - re-export under old module name
+#[deprecated(since = "0.1.0", note = "Use the new modular API instead")]
+pub mod client_utils {
+    pub use crate::network::*;
+    pub use crate::request::*;
+    pub use crate::validation::*;
+    pub use crate::response::*;
+}
+
 #[cfg(test)]
 mod tests {
-    use super::client_utils::*;
+    use super::{network::*, request::*, validation::*, response::*};
 
     #[test]
     fn test_parse_bootstrap_nodes_valid() {

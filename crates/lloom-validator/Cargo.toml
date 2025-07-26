@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Validator library and service for maintaining network integrity in the Lloom P2P network"
+documentation = "https://docs.rs/lloom-validator"
+keywords = ["p2p", "validator", "bootstrap", "network", "discovery"]
+categories = ["network-programming", "web-programming"]
 
 [[bin]]
 name = "lloom-validator"

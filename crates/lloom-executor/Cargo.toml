@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Executor library and service for providing LLM services in the Lloom P2P network"
+documentation = "https://docs.rs/lloom-executor"
+keywords = ["p2p", "llm", "executor", "service", "ai"]
+categories = ["network-programming", "web-programming", "api-bindings"]
 
 [[bin]]
 name = "lloom-executor"
@@ -37,17 +41,17 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 # HTTP client for OpenAI
-reqwest = { version = "0.12", features = ["json"] }
+reqwest.workspace = true
 
 # Token counting
-tiktoken-rs = "0.6"
+tiktoken-rs.workspace = true
 
 # Utilities
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
-toml = "0.8"
+toml.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true
