@@ -232,7 +232,7 @@ contract AccountingV2Test is Test {
         bytes memory wrongSignature = signRequest(request, wrongClientPrivateKey);
         
         vm.prank(executor);
-        vm.expectRevert("Invalid client signature");
+        vm.expectRevert("Client address mismatch");
         accounting.processRequest(
             request,
             response,
@@ -483,13 +483,16 @@ contract AccountingV2Test is Test {
         
         // Verify that logs were emitted (events were triggered)
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        assertTrue(logs.length >= 2, "Should emit at least 2 events");
+        assertTrue(logs.length >= 3, "Should emit at least 3 events");
         
-        // Verify the first event (RequestProcessed) has the correct topic
-        assertEq(logs[0].topics[0], keccak256("RequestProcessed(bytes32,address,address,string,uint32,uint32,uint256,bool)"), "First event should be RequestProcessed");
+        // Verify the first event (NonceIncremented) has the correct topic
+        assertEq(logs[0].topics[0], keccak256("NonceIncremented(address,uint64)"), "First event should be NonceIncremented");
         
-        // Verify the second event (PriceCommitment) has the correct topic
-        assertEq(logs[1].topics[0], keccak256("PriceCommitment(address,address,string,uint256,uint256)"), "Second event should be PriceCommitment");
+        // Verify the second event (RequestProcessed) has the correct topic
+        assertEq(logs[1].topics[0], keccak256("RequestProcessed(bytes32,address,address,string,uint32,uint32,uint256,bool)"), "Second event should be RequestProcessed");
+        
+        // Verify the third event (PriceCommitment) has the correct topic
+        assertEq(logs[2].topics[0], keccak256("PriceCommitment(address,address,string,uint256,uint256)"), "Third event should be PriceCommitment");
     }
     
     function testProcessRequestExecutorMismatch() public {
@@ -549,7 +552,7 @@ contract AccountingV2Test is Test {
         bytes memory wrongClientSignature = signRequest(request, wrongClientPrivateKey);
         bytes memory executorSignature = signResponse(response, executorPrivateKey);
         
-        vm.expectRevert("Invalid client signature");
+        vm.expectRevert("Client address mismatch");
         accounting.processRequestSigned(
             request,
             response,
@@ -566,7 +569,7 @@ contract AccountingV2Test is Test {
         bytes memory clientSignature = signRequest(request, clientPrivateKey);
         bytes memory wrongExecutorSignature = signResponse(response, wrongExecutorPrivateKey);
         
-        vm.expectRevert("Invalid executor signature");
+        vm.expectRevert("Executor mismatch");
         accounting.processRequestSigned(
             request,
             response,
@@ -793,7 +796,7 @@ contract AccountingV2Test is Test {
         assertEq(accounting.getCurrentNonce(client), 2, "Nonce should be 2");
     }
     
-    function testFailedRequestStatisticsTracking() public {
+    function testStatisticsTrackingForFailedRequest() public {
         AccountingV2.LlmRequestCommitment memory request = createValidRequest();
         bytes32 requestHash = accounting.getRequestMessageHash(request);
         AccountingV2.LlmResponseCommitment memory response = createValidResponse(requestHash);
