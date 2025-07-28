@@ -1,0 +1,205 @@
+{
+  "id": null,
+  "uid": "reth-overview",
+  "title": "RETH Node Overview",
+  "tags": ["reth", "ethereum"],
+  "style": "dark",
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "RETH Connection Status",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "up{job=\"reth\"}",
+          "interval": "",
+          "legendFormat": "RETH Status",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "title": "Executor Tasks Spawned",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "reth_executor_spawn_regular_tasks_total{job=\"reth\"}",
+          "interval": "",
+          "legendFormat": "Regular Tasks",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "id": 3,
+      "title": "Database Transaction Rate",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(reth_database_transaction_total{job=\"reth\"}[5m])",
+          "interval": "",
+          "legendFormat": "DB Transactions/sec",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "yAxes": [
+        {
+          "label": "Transactions/sec",
+          "min": 0
+        },
+        {
+          "show": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "RPC Server Calls Rate",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(reth_rpc_server_calls_total{job=\"reth\"}[5m])",
+          "interval": "",
+          "legendFormat": "RPC Server Calls/sec",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "yAxes": [
+        {
+          "label": "Requests/sec",
+          "min": 0
+        },
+        {
+          "show": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Process Memory Usage",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=\"reth\"}",
+          "interval": "",
+          "legendFormat": "Process Memory (bytes)",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "yAxes": [
+        {
+          "label": "Bytes",
+          "min": 0
+        },
+        {
+          "show": false
+        }
+      ]
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "refresh": "5s",
+  "schemaVersion": 27,
+  "version": 0,
+  "links": []
+}
