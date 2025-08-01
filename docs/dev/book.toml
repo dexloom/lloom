@@ -3,8 +3,8 @@ authors = ["Lloom Team"]
 language = "en"
 multilingual = false
 src = "src"
-title = "Lloom P2P LLM Service"
-description = "A decentralized P2P network for Large Language Model services built with Rust"
+title = "Lloom Developer Guide"
+description = "Developer documentation for the Lloom P2P LLM Service"
 
 [preprocessor.index]
 [preprocessor.links]
@@ -14,8 +14,8 @@ default-theme = "rust"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/lloom/lloom"
 git-repository-icon = "fa-github"
-edit-url-template = "https://github.com/lloom/lloom/edit/main/docs/{path}"
-site-url = "/lloom/"
+edit-url-template = "https://github.com/lloom/lloom/edit/main/docs/dev/{path}"
+site-url = "/lloom/dev/"
 mathjax-support = false
 copy-fonts = true
 no-section-label = false

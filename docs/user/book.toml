@@ -1,0 +1,41 @@
+[book]
+authors = ["Lloom Team"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Lloom User Manual"
+description = "User guide for the Lloom P2P LLM Service"
+
+[preprocessor.index]
+[preprocessor.links]
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/lloom/lloom"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/lloom/lloom/edit/main/docs/user/{path}"
+site-url = "/lloom/user/"
+mathjax-support = false
+copy-fonts = true
+no-section-label = false
+curly-quotes = true
+
+[output.html.fold]
+enable = true
+level = 0
+
+[output.html.playground]
+editable = true
+copy-js = true
+
+[output.html.search]
+enable = true
+limit-results = 20
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 2
