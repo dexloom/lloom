@@ -1,0 +1,24 @@
+[http]
+port = 3030
+bind_address = "127.0.0.1"
+
+[ethereum]
+rpc_url = "https://rpc.sepolia.org"
+private_key = "your_private_key_here"
+target_amount_eth = 1.0
+gas_multiplier = 1.2
+min_faucet_balance_eth = 10.0
+
+[smtp]
+server = "smtp.gmail.com"
+port = 587
+username = "your_email@gmail.com"
+password = "your_app_password"
+from_address = "your_email@gmail.com"
+subject = "Your Faucet Token"
+
+[security]
+token_expiry_minutes = 15
+max_requests_per_email_per_day = 1
+max_requests_per_ip_per_hour = 5
+cleanup_interval_minutes = 30

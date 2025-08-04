@@ -1,0 +1,45 @@
+[package]
+name = "faucet-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Workspace dependencies
+alloy.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+config.workspace = true
+toml.workspace = true
+rand.workspace = true
+chrono.workspace = true
+hex.workspace = true
+clap.workspace = true
+
+# HTTP server
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Email
+lettre = { version = "0.11", features = ["tokio1-native-tls", "smtp-transport"] }
+
+# Token generation
+uuid = { version = "1.0", features = ["v4"] }
+
+# Data structures
+dashmap = "5.5"
+
+# Validation
+validator = { version = "0.16", features = ["derive"] }
+
+[dev-dependencies]
+tokio-test.workspace = true
+tempfile.workspace = true

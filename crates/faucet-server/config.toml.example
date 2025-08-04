@@ -1,0 +1,45 @@
+# Lloom Faucet Server Configuration
+# Copy this file to faucet-config.toml and customize for your setup
+
+[http]
+# Port to bind the HTTP server to
+port = 3030
+# Address to bind to (0.0.0.0 for all interfaces, 127.0.0.1 for localhost only)
+bind_address = "127.0.0.1"
+
+[ethereum]
+# Ethereum RPC endpoint URL
+rpc_url = "https://rpc.sepolia.org"
+# Private key for the faucet wallet (64 hex characters, without 0x prefix)
+# IMPORTANT: Keep this secure! Consider using environment variables.
+private_key = "your_private_key_here"
+# Target amount in ETH to fund addresses to
+target_amount_eth = 1.0
+# Gas price multiplier (1.0 = normal, 1.5 = 50% higher)
+gas_multiplier = 1.2
+# Minimum balance required in faucet wallet (in ETH)
+min_faucet_balance_eth = 10.0
+
+[smtp]
+# SMTP server hostname
+server = "smtp.gmail.com"
+# SMTP server port (587 for TLS, 465 for SSL, 25 for plain)
+port = 587
+# Username for SMTP authentication
+username = "your_email@gmail.com"
+# Password for SMTP authentication (use app password for Gmail)
+password = "your_app_password"
+# From email address
+from_address = "your_email@gmail.com"
+# Email subject line
+subject = "Your Faucet Token"
+
+[security]
+# Token expiration time in minutes
+token_expiry_minutes = 15
+# Maximum requests per email address per day
+max_requests_per_email_per_day = 1
+# Maximum requests per IP address per hour
+max_requests_per_ip_per_hour = 5
+# Cleanup interval for expired tokens and rate limits in minutes
+cleanup_interval_minutes = 30
