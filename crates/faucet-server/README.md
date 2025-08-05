@@ -50,7 +50,7 @@ Request a faucet token by providing email and Ethereum address.
 ```
 
 ### `POST /redeem`
-Redeem a token to receive ETH funding.
+Redeem a token programmatically to receive ETH funding (JSON API).
 
 **Request Body**:
 ```json
@@ -67,6 +67,33 @@ Redeem a token to receive ETH funding.
   "ethereum_address": "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a"
 }
 ```
+
+### `GET /redeem/{token}`
+Redeem a token through a browser interface to receive ETH funding (HTML response).
+
+This endpoint provides an HTML response for web-based token redemption, making it easy for users to redeem tokens by clicking on links or visiting URLs directly in their browser.
+
+**URL Format**:
+```
+GET /redeem/{token}
+```
+
+**Parameters**:
+- `token` (path parameter): The verification token from email
+
+**Response**:
+- Returns HTML content with success or error messages
+- `200 OK`: HTML page confirming successful token redemption with transaction details
+- `400 Bad Request`: HTML page with error message for invalid token format
+- `404 Not Found`: HTML page indicating token not found or already used
+- `500 Internal Server Error`: HTML page with server error message
+
+**Example**:
+```
+http://localhost:3030/redeem/your-verification-token-from-email
+```
+
+Users can visit this URL in their browser to redeem tokens and see a user-friendly HTML page showing the redemption result.
 
 ### `GET /health`
 Health check endpoint.
@@ -158,12 +185,23 @@ cargo run --bin faucet-server
 
 2. **Check Email** and get the verification token
 
-3. **Redeem Token**:
+3. **Redeem Token** (choose one method):
+
+   **Method A: Programmatic redemption (JSON API)**:
    ```bash
    curl -X POST http://localhost:3030/redeem \
      -H "Content-Type: application/json" \
      -d '{"token":"your-token-from-email"}'
    ```
+
+   **Method B: Browser-based redemption (HTML interface)**:
+   
+   Simply visit the redemption URL in your browser:
+   ```
+   http://localhost:3030/redeem/your-token-from-email
+   ```
+   
+   This will display a user-friendly HTML page showing whether the token redemption was successful or if there were any errors.
 
 ## Development
 
