@@ -39,3 +39,8 @@ Thumbs.db
 /out/
 /lib/
 /cache/
+
+#config
+config.toml
+validator-key.txt
+
