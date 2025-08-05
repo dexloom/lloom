@@ -91,8 +91,9 @@ Ready to dive in? Here are your next steps:
 
 1. **[Installation](./getting-started/installation.md)**: Set up the Lloom tools and dependencies
 2. **[Quick Start](./getting-started/quick-start.md)**: Run your first client-executor interaction
-3. **[Architecture Overview](./technology/architecture.md)**: Understand the system design
-4. **[Development Environment](./getting-started/development-environment.md)**: Set up a local test network
+3. **[Testnet](./getting-started/testnet.md)**: Connect to our public testnet for development
+4. **[Architecture Overview](./technology/architecture.md)**: Understand the system design
+5. **[Development Environment](./getting-started/development-environment.md)**: Set up a local test network
 
 ## Community and Support
 

@@ -8,6 +8,7 @@
 - [Quick Start](./getting-started/quick-start.md)
 - [Development Environment](./getting-started/development-environment.md)
 - [Configuration](./getting-started/configuration.md)
+- [Testnet](./getting-started/testnet.md)
 
 # User Manual
 

@@ -207,6 +207,27 @@ To stop the test network:
 1. Press `Ctrl+C` in each terminal
 2. The nodes will gracefully shut down
 
+## Using the Public Testnet
+
+Instead of running a local network, you can also connect to our public testnet:
+
+```bash
+# Connect to the public testnet
+lloom-client request \
+  --rpc https://testnet.lloom.xyz/rpc \
+  --model "llama-2-7b-chat" \
+  --prompt "Hello from the Lloom testnet!" \
+  --max-tokens 50
+```
+
+The public testnet provides:
+- **Fast 1-second blocks** for quick confirmations
+- **Pre-funded test accounts** for immediate use
+- **Full monitoring** with Grafana dashboards
+- **Block explorer** to view all transactions
+
+Learn more in the [Testnet Guide](./testnet.md).
+
 ## What's Next?
 
 Congratulations! You've successfully:
@@ -216,10 +237,11 @@ Congratulations! You've successfully:
 
 ### Next Steps
 
-1. **[Development Environment](./development-environment.md)**: Set up a full development environment with blockchain
-2. **[Configuration Guide](./configuration.md)**: Learn about advanced configuration options
-3. **[Running an Executor](../user-manual/executor.md)**: Set up a production executor
-4. **[API Documentation](../api/client-library.md)**: Integrate Lloom into your applications
+1. **[Testnet](./testnet.md)**: Connect to the public testnet for development
+2. **[Development Environment](./development-environment.md)**: Set up a full development environment with blockchain
+3. **[Configuration Guide](./configuration.md)**: Learn about advanced configuration options
+4. **[Running an Executor](../user-manual/executor.md)**: Set up a production executor
+5. **[API Documentation](../api/client-library.md)**: Integrate Lloom into your applications
 
 ### Try These Challenges
 
