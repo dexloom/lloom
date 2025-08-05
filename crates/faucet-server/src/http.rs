@@ -8,8 +8,8 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    extract::{ConnectInfo, State},
-    response::Json,
+    extract::{ConnectInfo, Path, State},
+    response::{Html, Json},
     routing::{get, post},
     Router,
 };
@@ -71,6 +71,7 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/health", get(health))
         .route("/request", post(request_token))
         .route("/redeem", post(redeem_token))
+        .route("/redeem/:token", get(redeem_token_get))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -86,7 +87,8 @@ async fn root() -> Json<serde_json::Value> {
         "version": "1.0.0",
         "endpoints": {
             "POST /request": "Request a faucet token (provide email and ethereum_address)",
-            "POST /redeem": "Redeem a token to receive funds (provide token)",
+            "POST /redeem": "Redeem a token to receive funds (provide token) - JSON response",
+            "GET /redeem/{token}": "Redeem a token to receive funds (token in URL) - HTML response",
             "GET /health": "Health check",
         }
     }))
@@ -168,6 +170,48 @@ async fn redeem_token(
 ) -> FaucetResult<Json<RedeemResponse>> {
     info!("Redeem request from {}: token {}", addr.ip(), request.token);
     
+    // Use the shared redemption logic
+    let response = process_redeem_request(&state, &request).await?;
+    Ok(Json(response))
+}
+
+/// GET endpoint for redeem functionality - returns HTML response
+///
+/// # Endpoint
+/// `GET /redeem/{token}`
+///
+/// # Parameters
+/// - `token`: The redemption token (path parameter)
+///
+/// # Returns
+/// HTML page showing success or error message
+async fn redeem_token_get(
+    State(state): State<SharedState>,
+    Path(token): Path<String>,
+) -> Result<Html<String>, Html<String>> {
+    info!("GET redeem request for token: {}", token);
+    
+    let redeem_request = RedeemRequest { token: token.clone() };
+    
+    // Reuse the core redemption logic
+    match process_redeem_request(&state, &redeem_request).await {
+        Ok(response) => {
+            let html = generate_success_html(&response);
+            Ok(Html(html))
+        }
+        Err(e) => {
+            warn!("GET redeem failed for token {}: {}", token, e);
+            let error_html = generate_error_html(&e.to_string());
+            Err(Html(error_html))
+        }
+    }
+}
+
+/// Extract core redemption logic to be shared between POST and GET endpoints
+async fn process_redeem_request(
+    state: &SharedState,
+    request: &RedeemRequest,
+) -> FaucetResult<RedeemResponse> {
     // Consume and validate token
     let token_info = state.app_state.consume_token(&request.token)?;
     
@@ -184,14 +228,143 @@ async fn redeem_token(
         transaction_hash
     );
     
-    Ok(Json(RedeemResponse {
+    Ok(RedeemResponse {
         message: format!(
             "Successfully funded address {} with ETH. Transaction: {}",
             token_info.ethereum_address, transaction_hash
         ),
         transaction_hash,
         ethereum_address: token_info.ethereum_address,
-    }))
+    })
+}
+
+/// Generate HTML for successful redemption
+fn generate_success_html(response: &RedeemResponse) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Faucet - Redemption Successful</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }}
+        .success {{
+            color: #28a745;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }}
+        .details {{
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            text-align: left;
+        }}
+        .detail-row {{
+            margin: 10px 0;
+            word-break: break-all;
+        }}
+        .label {{
+            font-weight: bold;
+            color: #333;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="success">✅ Redemption Successful!</h1>
+        <p>{}</p>
+        <div class="details">
+            <div class="detail-row">
+                <span class="label">Address:</span> {}
+            </div>
+            <div class="detail-row">
+                <span class="label">Transaction Hash:</span> {}
+            </div>
+        </div>
+        <p><em>Your tokens have been successfully sent to your wallet!</em></p>
+    </div>
+</body>
+</html>"#,
+        response.message,
+        response.ethereum_address,
+        response.transaction_hash
+    )
+}
+
+/// Generate HTML for redemption error
+fn generate_error_html(error_message: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Faucet - Redemption Error</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }}
+        .error {{
+            color: #dc3545;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }}
+        .error-details {{
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border: 1px solid #f5c6cb;
+        }}
+        .help-text {{
+            color: #6c757d;
+            font-style: italic;
+            margin-top: 20px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="error">❌ Redemption Failed</h1>
+        <div class="error-details">
+            <strong>Error:</strong> {}
+        </div>
+        <p class="help-text">
+            Please check that your redemption token is valid and hasn't already been used.
+            If you continue to experience issues, please contact support.
+        </p>
+    </div>
+</body>
+</html>"#,
+        error_message
+    )
 }
 
 /// Start the HTTP server
@@ -245,10 +418,11 @@ pub async fn start_server(config: &FaucetConfig) -> FaucetResult<()> {
     
     info!("Faucet server listening on {}", bind_addr);
     info!("Endpoints:");
-    info!("  GET  /         - Server information");
-    info!("  GET  /health   - Health check");
-    info!("  POST /request  - Request faucet token");
-    info!("  POST /redeem   - Redeem token for funds");
+    info!("  GET  /            - Server information");
+    info!("  GET  /health      - Health check");
+    info!("  POST /request     - Request faucet token");
+    info!("  POST /redeem      - Redeem token for funds (JSON)");
+    info!("  GET  /redeem/{{token}} - Redeem token for funds (HTML)");
     
     axum::serve(
         listener,
