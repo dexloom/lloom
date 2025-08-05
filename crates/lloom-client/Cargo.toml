@@ -34,8 +34,9 @@ tracing-subscriber.workspace = true
 
 # Utilities
 anyhow.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+toml = "0.8"
 chrono.workspace = true
 
 [dev-dependencies]

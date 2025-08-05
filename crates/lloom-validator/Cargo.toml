@@ -31,6 +31,8 @@ tracing-subscriber.workspace = true
 
 # Utilities
 anyhow.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
 
 # P2P networking
 libp2p.workspace = true

@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use serde::Deserialize;
 use lloom_core::{
     identity::Identity,
     network::{LloomBehaviour, LloomEvent, helpers},
@@ -28,10 +29,24 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+#[derive(Debug, Deserialize)]
+struct ValidatorConfig {
+    identity: IdentityConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct IdentityConfig {
+    private_key: String,
+}
+
 /// Command-line arguments for the Validator node
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Validator node for Lloom P2P network")]
 struct Args {
+    /// Path to TOML configuration file
+    #[arg(long)]
+    config: Option<String>,
+    
     /// Path to the private key file (hex-encoded)
     #[arg(short = 'k', long, env = "VALIDATOR_PRIVATE_KEY_FILE")]
     private_key_file: Option<PathBuf>,
@@ -66,7 +81,31 @@ async fn main() -> Result<()> {
     info!("Starting Lloom Validator node...");
 
     // Load or generate identity
-    let identity = load_or_generate_identity(args.private_key_file.as_deref()).await?;
+    let identity = if let Some(config_path) = &args.config {
+        info!("Loading configuration from: {}", config_path);
+        let config_content = std::fs::read_to_string(config_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config file {}: {}", config_path, e))?;
+        let config: ValidatorConfig = toml::from_str(&config_content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse TOML config: {}", e))?;
+        
+        info!("Loading identity from config file");
+        Identity::from_str(&config.identity.private_key)
+            .map_err(|e| anyhow::anyhow!("Failed to parse identity from config: {}", e))?
+    } else if std::path::Path::new("config.toml").exists() {
+        info!("Automatically loading config from: config.toml");
+        let config_content = std::fs::read_to_string("config.toml")
+            .map_err(|e| anyhow::anyhow!("Failed to read config file config.toml: {}", e))?;
+        let config: ValidatorConfig = toml::from_str(&config_content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse TOML config: {}", e))?;
+        
+        info!("Loading identity from config file");
+        Identity::from_str(&config.identity.private_key)
+            .map_err(|e| anyhow::anyhow!("Failed to parse identity from config: {}", e))?
+    } else {
+        // Fall back to old method for backward compatibility
+        load_or_generate_identity(args.private_key_file.as_deref()).await?
+    };
+    
     info!("Node identity loaded: PeerId={}", identity.peer_id);
     info!("EVM address: {}", identity.evm_address);
 
@@ -258,6 +297,7 @@ mod tests {
         // Test with minimal args
         let args = Args::try_parse_from(&["validator"]).unwrap();
         assert_eq!(args.p2p_port, 9000);
+        assert_eq!(args.config, None);
         assert_eq!(args.private_key_file, None);
         assert_eq!(args.external_addr, None);
         assert!(!args.debug);
@@ -383,6 +423,7 @@ mod tests {
     #[test]
     fn test_args_debug_trait() {
         let args = Args {
+            config: None,
             private_key_file: None,
             p2p_port: 9000,
             external_addr: None,

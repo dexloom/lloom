@@ -4,6 +4,7 @@
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
+use serde::Deserialize;
 use lloom_core::{
     identity::Identity,
     network::{LloomBehaviour, LloomEvent, helpers},
@@ -24,15 +25,35 @@ use std::{
 use tokio::time::{timeout, sleep};
 use tracing::{debug, info, warn, error};
 
+#[derive(Debug, Deserialize)]
+struct ClientConfig {
+    identity: IdentityConfig,
+    network: NetworkConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct IdentityConfig {
+    private_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NetworkConfig {
+    bootstrap_nodes: Vec<String>,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Path to TOML configuration file
+    #[arg(long)]
+    config: Option<String>,
+    
     /// Private key (hex encoded) for identity
     #[arg(long, env = "LLOOM_PRIVATE_KEY")]
     private_key: Option<String>,
     
     /// Bootstrap nodes to connect to (validator nodes)
-    #[arg(long, value_delimiter = ',', required = true)]
+    #[arg(long, value_delimiter = ',')]
     bootstrap_nodes: Vec<String>,
     
     /// Model to use for the request
@@ -91,12 +112,54 @@ async fn main() -> Result<()> {
         )
         .init();
     
+    // Load configuration from file if provided, or check for default config.toml
+    let (final_private_key, final_bootstrap_nodes) = if let Some(config_path) = &args.config {
+        info!("Loading configuration from: {}", config_path);
+        let config_content = std::fs::read_to_string(config_path)
+            .map_err(|e| anyhow!("Failed to read config file {}: {}", config_path, e))?;
+        let config: ClientConfig = toml::from_str(&config_content)
+            .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
+        
+        // Command-line arguments override config file values
+        let private_key = args.private_key.clone().unwrap_or(config.identity.private_key);
+        let bootstrap_nodes = if args.bootstrap_nodes.is_empty() {
+            config.network.bootstrap_nodes
+        } else {
+            args.bootstrap_nodes.clone()
+        };
+        
+        (Some(private_key), bootstrap_nodes)
+    } else if std::path::Path::new("config.toml").exists() {
+        info!("Automatically loading config from: config.toml");
+        let config_content = std::fs::read_to_string("config.toml")
+            .map_err(|e| anyhow!("Failed to read config file config.toml: {}", e))?;
+        let config: ClientConfig = toml::from_str(&config_content)
+            .map_err(|e| anyhow!("Failed to parse TOML config: {}", e))?;
+        
+        // Command-line arguments override config file values
+        let private_key = args.private_key.clone().unwrap_or(config.identity.private_key);
+        let bootstrap_nodes = if args.bootstrap_nodes.is_empty() {
+            config.network.bootstrap_nodes
+        } else {
+            args.bootstrap_nodes.clone()
+        };
+        
+        (Some(private_key), bootstrap_nodes)
+    } else {
+        (args.private_key.clone(), args.bootstrap_nodes.clone())
+    };
+    
+    // Validate bootstrap nodes are provided
+    if final_bootstrap_nodes.is_empty() {
+        return Err(anyhow!("At least one bootstrap node is required (via --bootstrap-nodes or config file)"));
+    }
+    
     info!("Starting Lloom Client with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     info!("Model: {}", args.model);
     info!("Prompt: {}", args.prompt);
     
     // Load or generate identity
-    let identity = match &args.private_key {
+    let identity = match &final_private_key {
         Some(key) => {
             info!("Loading identity from private key");
             Identity::from_str(key)?
@@ -111,15 +174,11 @@ async fn main() -> Result<()> {
     info!("EVM address: {}", identity.evm_address);
     
     // Parse bootstrap nodes
-    let bootstrap_addrs: Result<Vec<Multiaddr>> = args.bootstrap_nodes
+    let bootstrap_addrs: Result<Vec<Multiaddr>> = final_bootstrap_nodes
         .iter()
         .map(|addr_str| addr_str.parse().map_err(Into::into))
         .collect();
     let bootstrap_addrs = bootstrap_addrs?;
-    
-    if bootstrap_addrs.is_empty() {
-        return Err(anyhow!("At least one bootstrap node is required"));
-    }
     
     info!("Bootstrap nodes: {:?}", bootstrap_addrs);
     
@@ -707,6 +766,7 @@ mod tests {
     #[test]
     fn test_args_debug_trait() {
         let args = Args {
+            config: None,
             private_key: None,
             bootstrap_nodes: vec!["/ip4/127.0.0.1/tcp/9000".to_string()],
             model: "gpt-3.5-turbo".to_string(),

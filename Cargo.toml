@@ -5,6 +5,7 @@ members = [
     "crates/lloom-executor",
     "crates/lloom-validator",
     "crates/faucet-server",
+    "crates/lloom-helper",
 ]
 resolver = "2"
 

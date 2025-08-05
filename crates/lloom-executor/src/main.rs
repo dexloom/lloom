@@ -47,8 +47,8 @@ struct Args {
     bootstrap_nodes: Vec<String>,
     
     /// Path to configuration file
-    #[arg(long, default_value = "config.toml")]
-    config: String,
+    #[arg(long)]
+    config: Option<String>,
     
     /// OpenAI API key (overrides config)
     #[arg(long, env = "OPENAI_API_KEY")]
@@ -102,7 +102,13 @@ async fn main() -> Result<()> {
         .init();
     
     info!("Starting Lloom Executor with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
-    info!("Config file: {}", args.config);
+    if let Some(config_path) = &args.config {
+        info!("Config file: {}", config_path);
+    } else if std::path::Path::new("config.toml").exists() {
+        info!("Config file: config.toml (auto-detected)");
+    } else {
+        info!("Config file: none (using defaults)");
+    }
     info!("RPC URL: {}", args.rpc_url);
     
     // Load or generate identity
@@ -121,11 +127,20 @@ async fn main() -> Result<()> {
     info!("EVM address: {}", identity.evm_address);
     
     // Load configuration
-    let mut config = if std::path::Path::new(&args.config).exists() {
-        info!("Loading configuration from {}", args.config);
-        ExecutorConfig::from_file(&args.config)?
+    let config_file = if let Some(config_path) = &args.config {
+        info!("Loading configuration from: {}", config_path);
+        config_path.clone()
+    } else if std::path::Path::new("config.toml").exists() {
+        info!("Automatically loading config from: config.toml");
+        "config.toml".to_string()
     } else {
-        info!("Configuration file not found, using defaults");
+        info!("No config file specified and config.toml not found, using defaults");
+        String::new()
+    };
+    
+    let mut config = if !config_file.is_empty() && std::path::Path::new(&config_file).exists() {
+        ExecutorConfig::from_file(&config_file)?
+    } else {
         ExecutorConfig::default()
     };
     
