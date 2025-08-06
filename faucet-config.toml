@@ -16,6 +16,7 @@ username = "your_email@gmail.com"
 password = "your_app_password"
 from_address = "your_email@gmail.com"
 subject = "Your Faucet Token"
+base_url = "http://localhost:3030"
 
 [security]
 token_expiry_minutes = 15

@@ -33,6 +33,8 @@ password = "your_app_password"
 from_address = "your_email@gmail.com"
 # Email subject line
 subject = "Your Faucet Token"
+# Base URL for the faucet service (for clickable verification links)
+base_url = "https://testnet.lloom.xyz/faucet"
 
 [security]
 # Token expiration time in minutes

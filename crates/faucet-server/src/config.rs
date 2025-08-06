@@ -68,6 +68,9 @@ pub struct SmtpConfig {
     
     /// Email subject line
     pub subject: String,
+    
+    /// Base URL for the faucet service (for clickable links)
+    pub base_url: String,
 }
 
 /// Security and rate limiting configuration
@@ -107,6 +110,7 @@ impl Default for FaucetConfig {
                 password: "your_app_password".to_string(),
                 from_address: "your_email@gmail.com".to_string(),
                 subject: "Your Faucet Token".to_string(),
+                base_url: "http://localhost:3030".to_string(),
             },
             security: SecurityConfig {
                 token_expiry_minutes: 15,

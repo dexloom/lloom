@@ -15,6 +15,7 @@ pub struct EmailService {
     transport: SmtpTransport,
     from_address: Mailbox,
     subject: String,
+    base_url: String,
 }
 
 impl EmailService {
@@ -35,6 +36,7 @@ impl EmailService {
             transport,
             from_address,
             subject: config.subject.clone(),
+            base_url: config.base_url.clone(),
         })
     }
 
@@ -74,6 +76,7 @@ impl EmailService {
 
     /// Create the email body with the token
     fn create_email_body(&self, token: &str, ethereum_address: &str) -> String {
+        let verification_url = format!("{}/redeem/{}", self.base_url, token);
         format!(
             r#"Welcome to the Ethereum Faucet!
 
@@ -81,10 +84,21 @@ You have requested funds for the Ethereum address: {}
 
 Your verification token is: {}
 
-To complete the funding process:
-1. Use this token to verify your request
-2. Send a POST request to /redeem with your token
-3. Your address will be funded with 1 ETH (up to the target amount)
+To complete the funding process, you have two options:
+
+OPTION 1 - Click the link below (easiest):
+{}
+
+OPTION 2 - Send a POST request manually:
+Send a POST request to {}/redeem with your token in JSON format:
+{{"token": "{}"}}
+
+Example using curl:
+curl -X POST {}/redeem \
+  -H "Content-Type: application/json" \
+  -d '{{"token": "{}"}}'
+
+Your address will be funded with 1 ETH (up to the target amount).
 
 This token will expire in 15 minutes for security reasons.
 
@@ -93,7 +107,7 @@ If you did not request this token, please ignore this email.
 ---
 Lloom Faucet Service
 "#,
-            ethereum_address, token
+            ethereum_address, token, verification_url, self.base_url, token, self.base_url, token
         )
     }
 
@@ -161,6 +175,7 @@ mod tests {
             password: "password".to_string(),
             from_address: "faucet@example.com".to_string(),
             subject: "Test Faucet Token".to_string(),
+            base_url: "http://localhost:3000".to_string(),
         }
     }
 
@@ -175,6 +190,9 @@ mod tests {
         assert!(body.contains("0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a"));
         assert!(body.contains("verification token"));
         assert!(body.contains("15 minutes"));
+        assert!(body.contains("http://localhost:3000/redeem/test-token-123"));
+        assert!(body.contains("OPTION 1"));
+        assert!(body.contains("OPTION 2"));
     }
 
     #[test]
@@ -229,9 +247,12 @@ mod tests {
         
         // Check for key phrases
         assert!(body.contains("verification token"));
-        assert!(body.contains("POST request to /redeem"));
+        assert!(body.contains("POST request"));
         assert!(body.contains("expire in 15 minutes"));
         assert!(body.contains("Lloom Faucet Service"));
+        assert!(body.contains("OPTION 1"));
+        assert!(body.contains("OPTION 2"));
+        assert!(body.contains(&format!("http://localhost:3000/redeem/{}", token)));
     }
 
     // Note: We don't test actual email sending in unit tests as it requires

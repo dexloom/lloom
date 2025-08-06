@@ -4,18 +4,34 @@ use crate::config::EthereumConfig;
 use crate::error::{FaucetError, FaucetResult};
 use alloy::{
     primitives::{Address, U256},
+    providers::Provider,
     signers::local::PrivateKeySigner,
 };
 use std::str::FromStr;
 use tracing::{debug, info};
 
-/// Ethereum client for faucet operations  
-#[derive(Debug)]
+/// Ethereum client for faucet operations
 pub struct EthereumClient {
-    _faucet_address: Address,
+    faucet_address: Address,
     target_amount: U256,
-    _gas_multiplier: f64,
-    _min_faucet_balance: U256,
+    gas_multiplier: f64,
+    min_faucet_balance: U256,
+    rpc_url: String,
+    provider: Box<dyn alloy::providers::Provider>,
+    signer: PrivateKeySigner,
+}
+
+impl std::fmt::Debug for EthereumClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EthereumClient")
+            .field("faucet_address", &self.faucet_address)
+            .field("target_amount", &self.target_amount)
+            .field("gas_multiplier", &self.gas_multiplier)
+            .field("min_faucet_balance", &self.min_faucet_balance)
+            .field("rpc_url", &self.rpc_url)
+            .field("signer", &self.signer)
+            .finish()
+    }
 }
 
 impl EthereumClient {
@@ -28,15 +44,23 @@ impl EthereumClient {
 
         let faucet_address = signer.address();
 
+        // Create HTTP provider
+        let url = url::Url::parse(&config.rpc_url)
+            .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Invalid RPC URL: {}", e)))?;
+        let provider = Box::new(alloy::providers::ProviderBuilder::new().connect_http(url));
+
         // Convert target amount from ETH to Wei
         let target_amount = Self::eth_to_wei(config.target_amount_eth);
         let min_faucet_balance = Self::eth_to_wei(config.min_faucet_balance_eth);
 
         Ok(Self {
-            _faucet_address: faucet_address,
+            faucet_address,
             target_amount,
-            _gas_multiplier: config.gas_multiplier,
-            _min_faucet_balance: min_faucet_balance,
+            gas_multiplier: config.gas_multiplier,
+            min_faucet_balance,
+            rpc_url: config.rpc_url.clone(),
+            provider,
+            signer,
         })
     }
 
@@ -56,18 +80,32 @@ impl EthereumClient {
 
     /// Check if the faucet has sufficient balance
     pub async fn check_faucet_balance(&self) -> FaucetResult<()> {
-        // For now, we'll assume the faucet has sufficient balance
-        // In a real implementation, you would check the balance using a proper provider
-        info!("Faucet balance check passed (mock implementation)");
+        let balance = self.provider.get_balance(self.faucet_address).await
+            .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Failed to get faucet balance: {}", e)))?;
+        
+        if balance < self.min_faucet_balance {
+            return Err(FaucetError::Internal(anyhow::anyhow!(
+                "Faucet balance {} ETH is below minimum required {} ETH",
+                Self::wei_to_eth(balance),
+                Self::wei_to_eth(self.min_faucet_balance)
+            )));
+        }
+        
+        info!(
+            "Faucet balance check passed: {} ETH (minimum: {} ETH)",
+            Self::wei_to_eth(balance),
+            Self::wei_to_eth(self.min_faucet_balance)
+        );
         Ok(())
     }
 
     /// Get the current balance of an address
     pub async fn get_balance(&self, address: Address) -> FaucetResult<U256> {
-        // For now, return a mock balance
-        // In a real implementation, you would query the balance using a proper provider
-        debug!("Getting balance for address: {} (mock implementation)", address);
-        Ok(U256::ZERO)
+        let balance = self.provider.get_balance(address).await
+            .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Failed to get balance for {}: {}", address, e)))?;
+        
+        debug!("Getting balance for address: {} = {} ETH", address, Self::wei_to_eth(balance));
+        Ok(balance)
     }
 
     /// Fund an address up to the target amount
@@ -93,18 +131,36 @@ impl EthereumClient {
         let amount_to_send = self.target_amount - current_balance;
 
         info!(
-            "Funding address {} with {} ETH (to reach {} ETH total) - MOCK IMPLEMENTATION",
+            "Funding address {} with {} ETH (to reach {} ETH total)",
             address,
             Self::wei_to_eth(amount_to_send),
             Self::wei_to_eth(self.target_amount)
         );
 
-        // Generate a mock transaction hash
-        let tx_hash = format!("0x{:0>64x}", rand::random::<u64>());
+        // Create wallet with the signer
+        let wallet = alloy::network::EthereumWallet::from(self.signer.clone());
+        
+        // Create provider with wallet for transaction signing
+        let provider_with_wallet = alloy::providers::ProviderBuilder::new()
+            .wallet(wallet)
+            .connect_http(url::Url::parse(&self.rpc_url)
+                .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Invalid provider URL: {}", e)))?);
+        
+        // Create transaction request
+        let tx_request = alloy::rpc::types::TransactionRequest::default()
+            .from(self.faucet_address)
+            .to(address)
+            .value(amount_to_send);
+        
+        // Send transaction and wait for receipt
+        let pending_tx = provider_with_wallet.send_transaction(tx_request).await
+            .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Failed to send transaction: {}", e)))?;
+        
+        let tx_hash = *pending_tx.tx_hash();
+        
+        info!("Transaction sent: {} (amount: {} ETH)", tx_hash, Self::wei_to_eth(amount_to_send));
 
-        info!("Mock transaction sent: {} (amount: {} ETH)", tx_hash, Self::wei_to_eth(amount_to_send));
-
-        Ok(tx_hash)
+        Ok(format!("{:#x}", tx_hash))
     }
 
     /// Validate Ethereum address format
@@ -115,7 +171,7 @@ impl EthereumClient {
 
     /// Get faucet address
     pub fn get_faucet_address(&self) -> Address {
-        self._faucet_address
+        self.faucet_address
     }
 
     /// Get target funding amount

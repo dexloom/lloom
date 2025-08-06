@@ -40,6 +40,9 @@ dashmap = "5.5"
 # Validation
 validator = { version = "0.16", features = ["derive"] }
 
+# URL parsing
+url = "2.4"
+
 [dev-dependencies]
 tokio-test.workspace = true
 tempfile.workspace = true
