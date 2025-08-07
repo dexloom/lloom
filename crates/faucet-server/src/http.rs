@@ -14,7 +14,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::{fs::OpenOptions, io::Write, net::SocketAddr, sync::Arc};
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, warn};
@@ -64,6 +64,20 @@ pub struct HealthResponse {
     pub active_tokens: usize,
 }
 
+/// Request to subscribe (accepts any JSON data)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubscribeRequest {
+    #[serde(flatten)]
+    pub data: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Response after successful subscription
+#[derive(Debug, Serialize)]
+pub struct SubscribeResponse {
+    pub message: String,
+    pub status: String,
+}
+
 /// Create the HTTP router with all endpoints
 pub fn create_router(state: SharedState) -> Router {
     Router::new()
@@ -72,6 +86,7 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/request", post(request_token))
         .route("/redeem", post(redeem_token))
         .route("/redeem/:token", get(redeem_token_get))
+        .route("/subscribe", post(subscribe))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -89,6 +104,7 @@ async fn root() -> Json<serde_json::Value> {
             "POST /request": "Request a faucet token (provide email and ethereum_address)",
             "POST /redeem": "Redeem a token to receive funds (provide token) - JSON response",
             "GET /redeem/{token}": "Redeem a token to receive funds (token in URL) - HTML response",
+            "POST /subscribe": "Subscribe with JSON data - saves to subscribers.csv",
             "GET /health": "Health check",
         }
     }))
@@ -205,6 +221,71 @@ async fn redeem_token_get(
             Err(Html(error_html))
         }
     }
+}
+
+/// Subscribe endpoint - accepts JSON data and appends to CSV file
+async fn subscribe(
+    State(_state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(request): Json<SubscribeRequest>,
+) -> FaucetResult<Json<SubscribeResponse>> {
+    info!("Subscribe request from {}: {:?}", addr.ip(), request.data);
+    
+    // Convert JSON data to CSV format
+    let csv_line = json_to_csv(&request.data)?;
+    
+    // Append to subscribers.csv file
+    append_to_csv_file("subscribers.csv", &csv_line)?;
+    
+    info!("Successfully appended subscription data to CSV file");
+    
+    Ok(Json(SubscribeResponse {
+        message: "Successfully subscribed and data saved".to_string(),
+        status: "success".to_string(),
+    }))
+}
+
+/// Convert JSON data to CSV format
+fn json_to_csv(data: &serde_json::Map<String, serde_json::Value>) -> FaucetResult<String> {
+    // Create a CSV record with key-value pairs
+    let mut csv_fields = Vec::new();
+    
+    // Add timestamp
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    csv_fields.push(timestamp);
+    
+    // Sort keys for consistent CSV format
+    let mut sorted_keys: Vec<_> = data.keys().collect();
+    sorted_keys.sort();
+    
+    // Add values in sorted key order
+    for key in sorted_keys {
+        let value = match data.get(key) {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            Some(serde_json::Value::Bool(b)) => b.to_string(),
+            Some(serde_json::Value::Null) => "".to_string(),
+            Some(other) => other.to_string(),
+            None => "".to_string(),
+        };
+        csv_fields.push(format!("{}:{}", key, value));
+    }
+    
+    Ok(csv_fields.join(","))
+}
+
+/// Append data to CSV file
+fn append_to_csv_file(filename: &str, csv_line: &str) -> FaucetResult<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(filename)
+        .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Failed to open CSV file: {}", e)))?;
+    
+    writeln!(file, "{}", csv_line)
+        .map_err(|e| FaucetError::Internal(anyhow::anyhow!("Failed to write to CSV file: {}", e)))?;
+    
+    Ok(())
 }
 
 /// Extract core redemption logic to be shared between POST and GET endpoints
@@ -423,6 +504,7 @@ pub async fn start_server(config: &FaucetConfig) -> FaucetResult<()> {
     info!("  POST /request     - Request faucet token");
     info!("  POST /redeem      - Redeem token for funds (JSON)");
     info!("  GET  /redeem/{{token}} - Redeem token for funds (HTML)");
+    info!("  POST /subscribe   - Subscribe with JSON data (saves to CSV)");
     
     axum::serve(
         listener,

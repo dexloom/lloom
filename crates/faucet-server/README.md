@@ -6,6 +6,7 @@ An Ethereum faucet server that provides ETH to addresses via email verification.
 
 - **Email Verification**: Users provide email and Ethereum address, receive verification token via email
 - **Configurable Funding**: Set target ETH amount (default: 1 ETH)
+- **Data Collection**: Subscribe endpoint for collecting arbitrary JSON data to CSV files
 - **Rate Limiting**: Configurable limits per email and IP address
 - **Security**: Token expiration, input validation, and comprehensive error handling
 - **Monitoring**: Health checks and detailed logging
@@ -94,6 +95,46 @@ http://localhost:3030/redeem/your-verification-token-from-email
 ```
 
 Users can visit this URL in their browser to redeem tokens and see a user-friendly HTML page showing the redemption result.
+
+### `POST /subscribe`
+Subscribe endpoint that accepts JSON data and saves it to a CSV file for data collection purposes.
+
+**Request Body**:
+```json
+{
+  "email": "user@example.com",
+  "name": "John Doe",
+  "plan": "premium",
+  "age": 25,
+  "newsletter": true
+}
+```
+
+**Response**:
+```json
+{
+  "message": "Successfully subscribed and data saved",
+  "status": "success"
+}
+```
+
+**Features**:
+- Accepts any JSON structure with arbitrary fields
+- Automatically adds timestamp to each record
+- Converts JSON data to CSV format with consistent field ordering
+- Appends data to `subscribers.csv` file (creates file if it doesn't exist)
+- Handles various JSON data types (string, number, boolean, null)
+- Logs all subscription requests with IP address
+
+**CSV Output Format**:
+The endpoint converts JSON data to CSV format with the following structure:
+- First column: Timestamp (YYYY-MM-DD HH:MM:SS UTC)
+- Subsequent columns: key:value pairs from JSON data in alphabetical order by key
+
+Example CSV output:
+```
+2025-08-07 04:54:23 UTC,age:25,email:user@example.com,name:John Doe,newsletter:true,plan:premium
+```
 
 ### `GET /health`
 Health check endpoint.
@@ -202,6 +243,18 @@ cargo run --bin faucet-server
    ```
    
    This will display a user-friendly HTML page showing whether the token redemption was successful or if there were any errors.
+
+4. **Subscribe with Data**:
+  ```bash
+  curl -X POST http://localhost:3030/subscribe \
+    -H "Content-Type: application/json" \
+    -d '{"email":"subscriber@example.com","name":"Jane Smith","plan":"premium","age":28,"newsletter":true}'
+  ```
+
+  This will append a new line to `subscribers.csv`:
+  ```
+  2025-08-07 12:34:56 UTC,age:28,email:subscriber@example.com,name:Jane Smith,newsletter:true,plan:premium
+  ```
 
 ## Development
 
