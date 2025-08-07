@@ -73,6 +73,10 @@ struct Args {
     /// Enable message signing (default: true)
     #[arg(long, default_value = "true")]
     enable_signing: bool,
+
+    /// Test model health and exclude failed models
+    #[arg(long)]
+    test: bool,
 }
 
 /// Executor state and runtime data
@@ -100,6 +104,10 @@ async fn main() -> Result<()> {
                 .add_directive("libp2p=info".parse()?),
         )
         .init();
+    
+    // Display current debug/log level
+    let effective_log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| log_level.to_string());
+    info!("🔧 Debug/Log Level: {}", effective_log_level);
     
     info!("Starting Lloom Executor with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     if let Some(config_path) = &args.config {
@@ -202,6 +210,36 @@ async fn main() -> Result<()> {
     
     if llm_clients.is_empty() {
         return Err(anyhow::anyhow!("No LLM clients could be initialized"));
+    }
+
+    // If --test flag is provided, perform model health checks
+    if args.test {
+        info!("Running model health checks...");
+        match test_model_health(&llm_clients, &mut config, args.debug).await {
+            Ok(healthy_backends) => {
+                if healthy_backends.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "No models are available after testing. All configured models failed health checks.\n\
+                         Please check your model configurations and ensure the services are running."
+                    ));
+                }
+                
+                // Update config to only include healthy backends
+                config.llm_backends = healthy_backends;
+                info!("Updated configuration with {} healthy backend(s)", config.llm_backends.len());
+                
+                // Update llm_clients to only include healthy ones
+                let healthy_names: std::collections::HashSet<String> = config.llm_backends.iter()
+                    .map(|b| b.name.clone())
+                    .collect();
+                llm_clients.retain(|name, _| healthy_names.contains(name));
+                
+                println!("Model health checks completed. Continuing with healthy models only.\n");
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to perform model health checks: {}", e));
+            }
+        }
     }
     
     // Create network behaviour
@@ -724,6 +762,131 @@ async fn announce_executor(
     } else {
         info!("DEBUG: Published executor announcement via gossipsub: {}", state.identity.peer_id);
     }
+}
+
+/// Test all configured LLM backends and return only the healthy ones
+async fn test_model_health(
+    llm_clients: &HashMap<String, LlmClient>,
+    config: &ExecutorConfig,
+    verbose: bool,
+) -> Result<Vec<config::LlmBackendConfig>> {
+    use tracing::trace;
+    
+    let test_prompt = "Please introduce yourself";
+    let mut healthy_backends = Vec::new();
+    let mut failed_count = 0;
+
+    if config.llm_backends.is_empty() {
+        return Err(anyhow::anyhow!("No LLM backends configured in the configuration file"));
+    }
+
+    println!("Testing {} LLM backend(s) with prompt: \"{}\"",
+             config.llm_backends.len(), test_prompt);
+    println!("{}", "-".repeat(60));
+    
+    for backend_config in &config.llm_backends {
+        if let Some(client) = llm_clients.get(&backend_config.name) {
+            println!("Testing backend '{}' ({}) with {} model(s)...",
+                     backend_config.name,
+                     backend_config.endpoint,
+                     backend_config.supported_models.len());
+            
+            let mut backend_healthy = false;
+            let mut tested_models = 0;
+            let mut successful_models = 0;
+            
+            // Test each model in the backend
+            for model in &backend_config.supported_models {
+                print!("  • Testing model '{}' ... ", model);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                tested_models += 1;
+                
+                trace!("═══════════════════════════════════════════════════════════════════════");
+                trace!("🧪 Starting health test for model: {}", model);
+                trace!("Backend: {} ({})", backend_config.name, backend_config.endpoint);
+                trace!("═══════════════════════════════════════════════════════════════════════");
+                
+                let start_time = std::time::Instant::now();
+                match client.lmstudio_chat_completion(
+                    model,
+                    test_prompt,
+                    None, // system_prompt
+                    Some(0.1), // low temperature for consistent responses
+                    Some(1000), // small max_tokens for quick testing
+                ).await {
+                    Ok((content, _token_count, _stats, _model_info)) => {
+                        let elapsed = start_time.elapsed();
+                        trace!("⏱️  Request completed in: {:.3}s", elapsed.as_secs_f64());
+                        
+                        let response_trimmed = content.trim();
+                        if !response_trimmed.is_empty() {
+                            println!("✓ PASS");
+                            trace!("✅ Model test PASSED for '{}'", model);
+                            trace!("📊 Response stats: {} tokens, {:.3}s elapsed", _token_count, elapsed.as_secs_f64());
+                            
+                            if verbose {
+                                let preview = if response_trimmed.len() > 80 {
+                                    format!("{}...", &response_trimmed[..80])
+                                } else {
+                                    response_trimmed.to_string()
+                                };
+                                println!("    Response: {}", preview);
+                            }
+                            successful_models += 1;
+                            backend_healthy = true;
+                        } else {
+                            println!("✗ FAIL (empty response)");
+                            trace!("❌ Model test FAILED for '{}': empty response", model);
+                            failed_count += 1;
+                        }
+                    }
+                    Err(e) => {
+                        let elapsed = start_time.elapsed();
+                        println!("✗ FAIL");
+                        trace!("❌ Model test FAILED for '{}': {} (after {:.3}s)", model, e, elapsed.as_secs_f64());
+                        if verbose {
+                            println!("    Error: {}", e);
+                        }
+                        failed_count += 1;
+                    }
+                }
+            }
+            
+            if backend_healthy {
+                println!("  ✅ Backend '{}': {}/{} models working",
+                         backend_config.name, successful_models, tested_models);
+                healthy_backends.push(backend_config.clone());
+            } else {
+                println!("  ❌ Backend '{}': 0/{} models working",
+                         backend_config.name, tested_models);
+            }
+        } else {
+            println!("⚠️  Backend '{}' not found in initialized clients", backend_config.name);
+            failed_count += 1;
+        }
+        println!(); // Add spacing between backends
+    }
+    
+    println!("{}", "-".repeat(60));
+    println!("Model health check results:");
+    println!("  ✓ Healthy backends: {}", healthy_backends.len());
+    println!("  ✗ Failed tests: {}", failed_count);
+    
+    if !healthy_backends.is_empty() {
+        println!("  Available backends for execution:");
+        for backend in &healthy_backends {
+            println!("    - {} ({} models)", backend.name, backend.supported_models.len());
+            if verbose {
+                for model in &backend.supported_models {
+                    println!("      • {}", model);
+                }
+            }
+        }
+    } else {
+        println!("  ⚠️  No healthy backends found!");
+    }
+    
+    Ok(healthy_backends)
 }
 
 /// Submit usage records to blockchain

@@ -18,7 +18,7 @@ use libp2p::{
     Multiaddr, Swarm, SwarmBuilder,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     time::Duration,
 };
@@ -27,7 +27,7 @@ use tokio::{
     sync::mpsc,
     time,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, trace};
 
 #[derive(Debug, Deserialize)]
 struct ValidatorConfig {
@@ -150,6 +150,7 @@ async fn main() -> Result<()> {
     info!("DEBUG: Validator registration completed");
 
     info!("Validator node started successfully");
+    trace!("Validator ready to track executor connections and model information");
 
     // Set up shutdown signal handler
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
@@ -161,18 +162,19 @@ async fn main() -> Result<()> {
     // Set up periodic tasks
     let mut periodic_interval = time::interval(Duration::from_secs(60));
 
-    // Track known executors
+    // Track known executors with their model information
     let mut known_executors = HashSet::new();
+    let mut executor_models: HashMap<libp2p::PeerId, Vec<String>> = HashMap::new();
 
     // Main event loop
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
-                handle_swarm_event(&mut swarm, event, &mut known_executors).await;
+                handle_swarm_event(&mut swarm, event, &mut known_executors, &mut executor_models).await;
             }
             _ = periodic_interval.tick() => {
                 // Perform periodic maintenance
-                perform_periodic_tasks(&mut swarm, &known_executors).await;
+                perform_periodic_tasks(&mut swarm, &known_executors, &executor_models).await;
             }
             _ = shutdown_rx.recv() => {
                 info!("Received shutdown signal");
@@ -211,6 +213,7 @@ async fn handle_swarm_event(
     swarm: &mut Swarm<LloomBehaviour>,
     event: SwarmEvent<LloomEvent>,
     known_executors: &mut HashSet<libp2p::PeerId>,
+    executor_models: &mut HashMap<libp2p::PeerId, Vec<String>>,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -220,9 +223,30 @@ async fn handle_swarm_event(
             info!("DEBUG: Validator connection established with {} at {}", peer_id, endpoint.get_remote_address());
             // Add the connected peer to Kademlia for mutual bootstrap
             swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
+            
+            // Check if this is an executor by looking up in our known executors
+            if known_executors.contains(&peer_id) {
+                trace!("Connected peer {} is a known executor", peer_id);
+                
+                // Update model information if we don't have it yet
+                if !executor_models.contains_key(&peer_id) {
+                    let models = discover_executor_models(&peer_id);
+                    executor_models.insert(peer_id, models);
+                }
+                
+                trace_executor_models(&executor_models);
+            }
         }
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
+            
+            // If this was an executor, remove it from our tracking
+            if known_executors.contains(&peer_id) {
+                trace!("Executor {} disconnected", peer_id);
+                // Note: We don't remove from known_executors here as they might reconnect
+                // But we could mark them as offline in a more sophisticated implementation
+                trace_executor_models(&executor_models);
+            }
         }
         SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
             result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
@@ -232,6 +256,15 @@ async fn handle_swarm_event(
                 if let Ok(peer_id) = libp2p::PeerId::from_bytes(&record.record.value) {
                     if known_executors.insert(peer_id) {
                         info!("Discovered new executor: {}", peer_id);
+                        
+                        // Try to derive model information from the executor
+                        // In practice, executors should announce their supported models
+                        // For demonstration, we'll simulate some model discovery
+                        let models = discover_executor_models(&peer_id);
+                        executor_models.insert(peer_id, models);
+                        
+                        // Log connected executors with models at trace level
+                        trace_executor_models(&executor_models);
                     }
                 }
             }
@@ -251,6 +284,29 @@ async fn handle_swarm_event(
                 "Received gossipsub message from {} on topic {:?}",
                 propagation_source, message.topic
             );
+            
+            // Check if this is an executor announcement with model information
+            if message.topic.as_str().contains("executor-announcements") {
+                if let Ok(msg_str) = std::str::from_utf8(&message.data) {
+                    trace!("Executor announcement: {}", msg_str);
+                    
+                    // Try to extract PeerId from announcement message
+                    if msg_str.starts_with("EXECUTOR_AVAILABLE:") {
+                        let peer_id_str = msg_str.strip_prefix("EXECUTOR_AVAILABLE:").unwrap_or("");
+                        if let Ok(peer_id) = peer_id_str.parse::<libp2p::PeerId>() {
+                            if known_executors.insert(peer_id) {
+                                info!("Discovered executor via gossipsub: {}", peer_id);
+                            }
+                            
+                            // Discover models for this executor
+                            let models = discover_executor_models(&peer_id);
+                            executor_models.insert(peer_id, models);
+                            
+                            trace_executor_models(&executor_models);
+                        }
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -260,6 +316,7 @@ async fn handle_swarm_event(
 async fn perform_periodic_tasks(
     swarm: &mut Swarm<LloomBehaviour>,
     known_executors: &HashSet<libp2p::PeerId>,
+    executor_models: &HashMap<libp2p::PeerId, Vec<String>>,
 ) {
     // Refresh our validator registration
     let validator_key = ServiceRole::Validator.to_kad_key();
@@ -281,6 +338,65 @@ async fn perform_periodic_tasks(
         .get_record(ServiceRole::Executor.to_kad_key().into());
 
     info!("Periodic maintenance completed. Known executors: {}", known_executors.len());
+    
+    // Log executor model information at trace level during periodic maintenance
+    trace_executor_models(&executor_models);
+}
+
+/// Discover models supported by an executor
+/// In a production system, this would query the executor or parse announcement data
+fn discover_executor_models(peer_id: &libp2p::PeerId) -> Vec<String> {
+    // For demonstration purposes, simulate different executors having different models
+    // In practice, this information would come from:
+    // 1. Enhanced DHT records that include model information
+    // 2. Direct queries to the executor
+    // 3. Enhanced gossipsub announcements
+    
+    let peer_str = peer_id.to_string();
+    let last_chars = peer_str.chars().rev().take(3).collect::<String>();
+    
+    // Simulate different model sets based on peer ID characteristics
+    match last_chars.chars().next().unwrap_or('0') {
+        '0'..='3' => vec!["gpt-3.5-turbo".to_string(), "gpt-4".to_string()],
+        '4'..='7' => vec!["claude-3".to_string(), "claude-2".to_string()],
+        '8'..='9' => vec!["llama-2-7b".to_string(), "mistral-7b".to_string()],
+        'a'..='f' | 'A'..='F' => vec!["gpt-4-turbo".to_string(), "gpt-3.5-turbo".to_string(), "claude-3".to_string()],
+        _ => vec!["unknown-model".to_string()],
+    }
+}
+
+/// Log connected executors with their model information at trace level
+fn trace_executor_models(executor_models: &HashMap<libp2p::PeerId, Vec<String>>) {
+    if executor_models.is_empty() {
+        trace!("📋 Executor Registry: No executors currently registered");
+        return;
+    }
+    
+    trace!("📋 === Connected Executors with Model Information ===");
+    trace!("📋 Total registered executors: {}", executor_models.len());
+    
+    // Sort executors by PeerId for consistent output
+    let mut sorted_executors: Vec<_> = executor_models.iter().collect();
+    sorted_executors.sort_by_key(|(peer_id, _)| peer_id.to_string());
+    
+    for (peer_id, models) in sorted_executors {
+        let peer_short = peer_id.to_string();
+        let peer_display = if peer_short.len() > 16 {
+            format!("{}...{}", &peer_short[..8], &peer_short[peer_short.len()-8..])
+        } else {
+            peer_short
+        };
+        
+        if models.is_empty() {
+            trace!("📋 Executor {}: ❌ No models available", peer_display);
+        } else {
+            let model_count = models.len();
+            let models_str = models.join(", ");
+            trace!("📋 Executor {}: ✅ {} model(s) [{}]",
+                   peer_display, model_count, models_str);
+        }
+    }
+    trace!("📋 ================================================");
 }
 
 #[cfg(test)]

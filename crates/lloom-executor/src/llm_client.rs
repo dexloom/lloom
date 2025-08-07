@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::{Client, header};
 use std::{time::Duration, collections::HashMap};
 use crate::config::LlmBackendConfig;
+use tracing::trace;
 
 /// OpenAI-compatible chat completion request
 #[derive(Debug, Serialize, Deserialize)]
@@ -192,6 +193,25 @@ impl LlmClient {
         
         // Make the request
         let url = format!("{}/chat/completions", self.backend_config.endpoint);
+        
+        // Log detailed request information at trace level
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("🌐 HTTP REQUEST");
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("🎯 Endpoint: {}", url);
+        trace!("🔧 Method: POST");
+        trace!("📋 Headers:");
+        trace!("   Content-Type: application/json");
+        trace!("   Authorization: Bearer [API_KEY_PRESENT]");
+        trace!("📄 Request Body:");
+        if let Ok(request_json) = serde_json::to_string_pretty(&request) {
+            trace!("{}", request_json);
+        } else {
+            trace!("   [Failed to serialize request body]");
+        }
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        let request_start = std::time::Instant::now();
         let response = self.http_client
             .post(&url)
             .header(header::AUTHORIZATION, format!("Bearer {}", api_key))
@@ -199,16 +219,47 @@ impl LlmClient {
             .json(&request)
             .send()
             .await?;
+        let request_duration = request_start.elapsed();
             
+        // Log detailed response information at trace level
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("📨 HTTP RESPONSE");
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("⏱️  Request Duration: {:.3}s", request_duration.as_secs_f64());
+        trace!("🔢 Status Code: {}", response.status());
+        trace!("📋 Response Headers:");
+        for (name, value) in response.headers() {
+            if let Ok(value_str) = value.to_str() {
+                trace!("   {}: {}", name, value_str);
+            }
+        }
+        
         // Check status
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await?;
+            trace!("❌ Error Response Body:");
+            trace!("{}", error_text);
+            trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             return Err(anyhow!("LLM API error ({}): {}", status, error_text));
         }
         
+        // Get response text and log it
+        let response_text = response.text().await?;
+        trace!("📄 Response Body:");
+        if let Ok(formatted_json) = serde_json::from_str::<serde_json::Value>(&response_text) {
+            if let Ok(pretty_json) = serde_json::to_string_pretty(&formatted_json) {
+                trace!("{}", pretty_json);
+            } else {
+                trace!("{}", response_text);
+            }
+        } else {
+            trace!("{}", response_text);
+        }
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
         // Parse response
-        let completion: ChatCompletionResponse = response.json().await?;
+        let completion: ChatCompletionResponse = serde_json::from_str(&response_text)?;
         
         // Extract content and token count
         let content = completion.choices
@@ -296,22 +347,71 @@ impl LlmClient {
         
         // Make the request to LMStudio's enhanced endpoint
         let url = format!("{}/chat/completions", self.backend_config.endpoint);
+        
+        // Log detailed request information at trace level
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("🌐 HTTP REQUEST");
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("🎯 Endpoint: {}", url);
+        trace!("🔧 Method: POST");
+        trace!("📋 Headers:");
+        trace!("   Content-Type: application/json");
+        if self.backend_config.api_key.is_some() {
+            trace!("   Authorization: Bearer [API_KEY_PRESENT]");
+        }
+        trace!("📄 Request Body:");
+        if let Ok(request_json) = serde_json::to_string_pretty(&request) {
+            trace!("{}", request_json);
+        } else {
+            trace!("   [Failed to serialize request body]");
+        }
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        let request_start = std::time::Instant::now();
         let response = self.http_client
             .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request)
             .send()
             .await?;
+        let request_duration = request_start.elapsed();
             
+        // Log detailed response information at trace level
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("📨 HTTP RESPONSE");
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        trace!("⏱️  Request Duration: {:.3}s", request_duration.as_secs_f64());
+        trace!("🔢 Status Code: {}", response.status());
+        trace!("📋 Response Headers:");
+        for (name, value) in response.headers() {
+            if let Ok(value_str) = value.to_str() {
+                trace!("   {}: {}", name, value_str);
+            }
+        }
+        
         // Check status
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await?;
+            trace!("❌ Error Response Body:");
+            trace!("{}", error_text);
+            trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             return Err(anyhow!("LMStudio API error ({}): {}", status, error_text));
         }
         
         // Try to parse as LMStudio enhanced response first, fall back to regular response
         let response_text = response.text().await?;
+        trace!("📄 Response Body:");
+        if let Ok(formatted_json) = serde_json::from_str::<serde_json::Value>(&response_text) {
+            if let Ok(pretty_json) = serde_json::to_string_pretty(&formatted_json) {
+                trace!("{}", pretty_json);
+            } else {
+                trace!("{}", response_text);
+            }
+        } else {
+            trace!("{}", response_text);
+        }
+        trace!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         if let Ok(lm_completion) = serde_json::from_str::<LmStudioChatResponse>(&response_text) {
             // Enhanced LMStudio response
