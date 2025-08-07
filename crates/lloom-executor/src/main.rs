@@ -12,7 +12,11 @@ use config::ExecutorConfig;
 use lloom_core::{
     identity::Identity,
     network::{LloomBehaviour, LloomEvent, helpers},
-    protocol::{LlmRequest, LlmResponse, ServiceRole, UsageRecord, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
+    protocol::{
+        LlmRequest, LlmResponse, ServiceRole, UsageRecord, RequestMessage, ResponseMessage,
+        constants::MAX_MESSAGE_AGE_SECS, ModelAnnouncement, ModelDescriptor, ModelCapabilities,
+        AnnouncementType, ModelPricing
+    },
     signing::{SignableMessage},
 };
 use futures::StreamExt;
@@ -33,7 +37,7 @@ use tokio::{
     sync::mpsc,
     time::interval,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -77,6 +81,122 @@ struct Args {
     /// Test model health and exclude failed models
     #[arg(long)]
     test: bool,
+}
+
+/// Helper function to create model descriptors from executor configuration
+async fn create_model_descriptors(
+    config: &ExecutorConfig,
+    llm_clients: &HashMap<String, LlmClient>,
+) -> Vec<ModelDescriptor> {
+    let mut descriptors = Vec::new();
+    
+    for backend_config in &config.llm_backends {
+        let client = match llm_clients.get(&backend_config.name) {
+            Some(client) => client,
+            None => {
+                warn!("No LLM client found for backend: {}", backend_config.name);
+                continue;
+            }
+        };
+        
+        for model_id in &backend_config.supported_models {
+            let mut capabilities = ModelCapabilities {
+                max_context_length: 4096, // Default context length
+                features: vec!["chat".to_string(), "completion".to_string()],
+                architecture: None,
+                model_size: None,
+                performance: None,
+                metadata: std::collections::HashMap::new(),
+            };
+            
+            // Try to get model-specific information if available
+            if client.is_lmstudio_backend() {
+                // For LMStudio, we could potentially get more detailed model info
+                capabilities.features.push("streaming".to_string());
+                capabilities.metadata.insert(
+                    "backend_type".to_string(),
+                    serde_json::Value::String("lmstudio".to_string())
+                );
+            }
+            
+            let descriptor = ModelDescriptor {
+                model_id: model_id.clone(),
+                backend_type: backend_config.name.clone(),
+                capabilities,
+                is_available: true,
+                pricing: Some(ModelPricing {
+                    input_token_price: "500000000000000".to_string(), // 0.0005 ETH per token
+                    output_token_price: "1000000000000000".to_string(), // 0.001 ETH per token
+                    minimum_fee: None,
+                }),
+            };
+            
+            descriptors.push(descriptor);
+        }
+    }
+    
+    info!("Created {} model descriptors for announcement", descriptors.len());
+    descriptors
+}
+
+/// Send model announcement via gossipsub (since no direct validator connection exists yet)
+async fn announce_models_to_network(
+    swarm: &mut Swarm<LloomBehaviour>,
+    identity: &Identity,
+    config: &ExecutorConfig,
+    llm_clients: &HashMap<String, LlmClient>,
+    announcement_type: AnnouncementType,
+) -> Result<()> {
+    let model_descriptors = create_model_descriptors(config, llm_clients).await;
+    
+    if model_descriptors.is_empty() {
+        warn!("No models available for announcement");
+        return Ok(());
+    }
+    
+    let announcement = ModelAnnouncement {
+        executor_peer_id: identity.peer_id.to_string(),
+        executor_address: identity.evm_address,
+        models: model_descriptors.clone(),
+        announcement_type,
+        timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        nonce: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64, // Use nanoseconds as nonce for uniqueness
+        protocol_version: 1,
+    };
+    
+    // Sign the announcement
+    let signed_announcement = announcement.sign_blocking(&identity.wallet)?;
+    
+    // Publish via gossipsub to model announcement topic
+    let topic = libp2p::gossipsub::IdentTopic::new("lloom/model-announcements");
+    let message_data = serde_json::to_vec(&signed_announcement)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize announcement: {}", e))?;
+    
+    debug!("Serialized model announcement: {} bytes (SignedMessage<ModelAnnouncement>)",
+           message_data.len());
+    trace!("Signed announcement signer: {}", signed_announcement.signer);
+    
+    match swarm.behaviour_mut().gossipsub.publish(topic, message_data) {
+        Ok(_) => {
+            info!(
+                "Successfully announced {} models via gossipsub (type: {:?})",
+                model_descriptors.len(),
+                announcement.announcement_type
+            );
+        }
+        Err(e) => {
+            error!("Failed to publish model announcement: {:?}", e);
+            return Err(anyhow::anyhow!("Failed to publish announcement: {:?}", e));
+        }
+    }
+    
+    Ok(())
 }
 
 /// Executor state and runtime data
@@ -322,6 +442,23 @@ async fn main() -> Result<()> {
     
     info!("DEBUG: ✅ Executor registration completed");
     
+    // Subscribe to model announcement topics for discovery
+    helpers::subscribe_topic(&mut swarm, "lloom/model-announcements")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/model-queries")?;
+    
+    // Send initial model announcement to network
+    if let Err(e) = announce_models_to_network(
+        &mut swarm,
+        &identity,
+        &config,
+        &llm_clients,
+        AnnouncementType::Initial,
+    ).await {
+        error!("Failed to send initial model announcement: {}", e);
+    } else {
+        info!("✅ Initial model announcement sent successfully");
+    }
+    
     // Initialize blockchain client
     let blockchain_client = match BlockchainClient::new(identity.clone(), config.blockchain.clone()).await {
         Ok(client) => {
@@ -359,6 +496,13 @@ async fn main() -> Result<()> {
     let mut announce_interval = interval(Duration::from_secs(config.network.announce_interval_secs));
     let mut batch_interval = interval(Duration::from_secs(config.blockchain.batch_interval_secs));
     
+    // Model announcement heartbeat timer (every 30 seconds)
+    let mut model_heartbeat_interval = interval(Duration::from_secs(30));
+    model_heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    
+    // Track previous model state for change detection
+    let mut previous_models = create_model_descriptors(&config, &executor_state.llm_clients).await;
+    
     // Set up shutdown signal handler
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
     tokio::spawn(async move {
@@ -375,11 +519,59 @@ async fn main() -> Result<()> {
             _ = announce_interval.tick() => {
                 announce_executor(&mut swarm, &executor_state).await;
             }
+            _ = model_heartbeat_interval.tick() => {
+                // Send periodic model heartbeat
+                if let Err(e) = announce_models_to_network(
+                    &mut swarm,
+                    &executor_state.identity,
+                    &executor_state.config,
+                    &executor_state.llm_clients,
+                    AnnouncementType::Heartbeat,
+                ).await {
+                    error!("Failed to send model heartbeat: {}", e);
+                } else {
+                    debug!("Sent model heartbeat successfully");
+                }
+                
+                // Check for model updates (particularly for LMStudio dynamic discovery)
+                let current_models = create_model_descriptors(&executor_state.config, &executor_state.llm_clients).await;
+                if current_models != previous_models {
+                    info!("Model configuration changed: {} -> {} models", previous_models.len(), current_models.len());
+                    
+                    if let Err(e) = announce_models_to_network(
+                        &mut swarm,
+                        &executor_state.identity,
+                        &executor_state.config,
+                        &executor_state.llm_clients,
+                        AnnouncementType::Update,
+                    ).await {
+                        error!("Failed to send model update announcement: {}", e);
+                    } else {
+                        info!("Successfully sent model update announcement");
+                    }
+                    
+                    previous_models = current_models;
+                }
+            }
             _ = batch_interval.tick() => {
                 submit_usage_batch(&mut executor_state).await;
             }
             _ = shutdown_rx.recv() => {
                 info!("Received shutdown signal");
+                
+                // Send removal announcement before shutting down
+                if let Err(e) = announce_models_to_network(
+                    &mut swarm,
+                    &executor_state.identity,
+                    &executor_state.config,
+                    &executor_state.llm_clients,
+                    AnnouncementType::Removal,
+                ).await {
+                    error!("Failed to send removal announcement: {}", e);
+                } else {
+                    info!("Sent removal announcement before shutdown");
+                }
+                
                 break;
             }
         }
@@ -537,6 +729,23 @@ async fn handle_request_message(
             };
             
             handle_llm_request(swarm, signed_request.payload, channel, client_peer, state, signer_address).await;
+        }
+        RequestMessage::ModelAnnouncement(signed_announcement) => {
+            // Log model announcements received from other executors
+            debug!("Received model announcement from {}: {} models",
+                   client_peer, signed_announcement.payload.models.len());
+            // For now, just log - could be used for peer discovery in the future
+        }
+        RequestMessage::ModelQuery(signed_query) => {
+            // Log model queries - typically from clients looking for available models
+            debug!("Received model query from {}: {:?}", client_peer, signed_query.payload.query_type);
+            // For now, just log - could be used to respond with our model availability
+        }
+        RequestMessage::ModelUpdate(signed_update) => {
+            // Log model updates from other executors
+            debug!("Received model update from {}: {:?}",
+                   client_peer, signed_update.payload.update_type);
+            // For now, just log - could be used for dynamic model discovery
         }
     }
 }

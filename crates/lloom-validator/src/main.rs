@@ -9,25 +9,336 @@ use serde::Deserialize;
 use lloom_core::{
     identity::Identity,
     network::{LloomBehaviour, LloomEvent, helpers},
-    protocol::ServiceRole,
+    protocol::{
+        ServiceRole, ModelAnnouncement, ModelDescriptor, AnnouncementType,
+        NetworkStatistics, ExecutorStatistics, SignedModelAnnouncement
+    },
 };
 use futures::StreamExt;
 use libp2p::{
-    kad::{self, QueryResult, Record},
+    kad::{self, QueryResult as KadQueryResult, Record},
     swarm::SwarmEvent,
-    Multiaddr, Swarm, SwarmBuilder,
+    PeerId, Multiaddr, Swarm, SwarmBuilder,
 };
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex},
 };
 use tokio::{
     signal,
     sync::mpsc,
     time,
 };
-use tracing::{debug, info, warn, trace};
+use tracing::{debug, error, info, warn, trace};
+use alloy::primitives::Address;
+
+/// Configuration for the model registry
+#[derive(Debug, Clone)]
+struct RegistryConfig {
+    /// Seconds after which an executor is considered stale
+    stale_timeout: u64,
+    /// Seconds after which a stale executor is removed
+    removal_timeout: u64,
+    /// Maximum number of executors to track
+    max_executors: usize,
+    /// Maximum number of models per executor
+    max_models_per_executor: usize,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            stale_timeout: 90,      // 1.5 minutes
+            removal_timeout: 300,   // 5 minutes
+            max_executors: 1000,
+            max_models_per_executor: 50,
+        }
+    }
+}
+
+/// Connection state of an executor
+#[derive(Debug, Clone, PartialEq)]
+enum ConnectionState {
+    Connected,
+    Disconnected,
+    Stale,      // Not heard from in stale_timeout seconds
+    Unknown,
+}
+
+/// Record of an executor in the registry
+#[derive(Debug, Clone)]
+struct ExecutorRecord {
+    peer_id: PeerId,
+    evm_address: Address,
+    models: HashMap<String, ModelDescriptor>,
+    connection_state: ConnectionState,
+    last_seen: u64,
+    last_announcement: u64,
+    stats: ExecutorStatistics,
+}
+
+impl ExecutorRecord {
+    fn new(peer_id: PeerId, evm_address: Address) -> Self {
+        Self {
+            peer_id,
+            evm_address,
+            models: HashMap::new(),
+            connection_state: ConnectionState::Unknown,
+            last_seen: ModelRegistry::current_timestamp(),
+            last_announcement: ModelRegistry::current_timestamp(),
+            stats: ExecutorStatistics {
+                total_requests: 0,
+                successful_requests: 0,
+                failed_requests: 0,
+                avg_response_time: 0,
+                total_tokens: 0,
+                last_updated: ModelRegistry::current_timestamp(),
+            },
+        }
+    }
+
+    fn is_stale(&self, stale_timeout: u64) -> bool {
+        let now = ModelRegistry::current_timestamp();
+        now.saturating_sub(self.last_seen) > stale_timeout
+    }
+
+    fn should_be_removed(&self, removal_timeout: u64) -> bool {
+        let now = ModelRegistry::current_timestamp();
+        now.saturating_sub(self.last_seen) > removal_timeout
+    }
+
+    fn update_connection_state(&mut self, connected: bool) {
+        self.connection_state = if connected {
+            ConnectionState::Connected
+        } else {
+            ConnectionState::Disconnected
+        };
+        self.last_seen = ModelRegistry::current_timestamp();
+    }
+}
+
+/// Main model registry for the validator
+#[derive(Debug)]
+struct ModelRegistry {
+    config: RegistryConfig,
+    executor_records: HashMap<PeerId, ExecutorRecord>,
+    model_to_executors: HashMap<String, HashSet<PeerId>>,
+    network_stats: NetworkStatistics,
+}
+
+impl ModelRegistry {
+    fn new(config: RegistryConfig) -> Self {
+        Self {
+            config,
+            executor_records: HashMap::new(),
+            model_to_executors: HashMap::new(),
+            network_stats: NetworkStatistics {
+                total_executors: 0,
+                total_models: 0,
+                connected_executors: 0,
+                total_requests: 0,
+                uptime: 0,
+                last_reset: ModelRegistry::current_timestamp(),
+            },
+        }
+    }
+
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// Handle a model announcement from an executor
+    fn handle_announcement(&mut self, announcement: &ModelAnnouncement) -> Result<()> {
+        let peer_id = announcement.executor_peer_id.parse::<PeerId>()
+            .map_err(|e| anyhow::anyhow!("Invalid peer ID in announcement: {}", e))?;
+
+        match announcement.announcement_type {
+            AnnouncementType::Initial => {
+                self.register_executor(&peer_id, &announcement.executor_address, &announcement.models)?;
+            }
+            AnnouncementType::Update => {
+                self.update_executor_models(&peer_id, &announcement.models)?;
+            }
+            AnnouncementType::Removal => {
+                self.remove_executor(&peer_id)?;
+            }
+            AnnouncementType::Heartbeat => {
+                self.update_executor_heartbeat(&peer_id)?;
+            }
+        }
+
+        info!("Processed {:?} announcement from executor {}", 
+              announcement.announcement_type, peer_id);
+        
+        self.update_network_stats();
+        Ok(())
+    }
+
+    /// Register a new executor
+    fn register_executor(
+        &mut self, 
+        peer_id: &PeerId, 
+        evm_address: &Address, 
+        models: &[ModelDescriptor]
+    ) -> Result<()> {
+        // Check capacity limits
+        if self.executor_records.len() >= self.config.max_executors {
+            return Err(anyhow::anyhow!("Registry at capacity: {} executors", self.config.max_executors));
+        }
+
+        if models.len() > self.config.max_models_per_executor {
+            return Err(anyhow::anyhow!("Too many models: {} > {}", 
+                                     models.len(), self.config.max_models_per_executor));
+        }
+
+        let mut record = ExecutorRecord::new(*peer_id, *evm_address);
+        record.connection_state = ConnectionState::Connected;
+
+        // Add models to the record and index them
+        for model in models {
+            record.models.insert(model.model_id.clone(), model.clone());
+            
+            // Update model-to-executor mapping
+            self.model_to_executors
+                .entry(model.model_id.clone())
+                .or_insert_with(HashSet::new)
+                .insert(*peer_id);
+        }
+
+        self.executor_records.insert(*peer_id, record);
+
+        info!("Registered executor {} with {} models", peer_id, models.len());
+        Ok(())
+    }
+
+    /// Update models for an existing executor
+    fn update_executor_models(&mut self, peer_id: &PeerId, models: &[ModelDescriptor]) -> Result<()> {
+        let record = self.executor_records.get_mut(peer_id)
+            .ok_or_else(|| anyhow::anyhow!("Executor {} not found", peer_id))?;
+
+        // Clear existing model mappings for this executor
+        for model_id in record.models.keys() {
+            if let Some(executors) = self.model_to_executors.get_mut(model_id) {
+                executors.remove(peer_id);
+                if executors.is_empty() {
+                    self.model_to_executors.remove(model_id);
+                }
+            }
+        }
+
+        // Update with new models
+        record.models.clear();
+        for model in models {
+            record.models.insert(model.model_id.clone(), model.clone());
+            
+            self.model_to_executors
+                .entry(model.model_id.clone())
+                .or_insert_with(HashSet::new)
+                .insert(*peer_id);
+        }
+
+        record.last_announcement = Self::current_timestamp();
+        record.connection_state = ConnectionState::Connected;
+
+        info!("Updated executor {} with {} models", peer_id, models.len());
+        Ok(())
+    }
+
+    /// Remove an executor from the registry
+    fn remove_executor(&mut self, peer_id: &PeerId) -> Result<()> {
+        if let Some(record) = self.executor_records.remove(peer_id) {
+            // Remove from model mappings
+            for model_id in record.models.keys() {
+                if let Some(executors) = self.model_to_executors.get_mut(model_id) {
+                    executors.remove(peer_id);
+                    if executors.is_empty() {
+                        self.model_to_executors.remove(model_id);
+                    }
+                }
+            }
+
+            info!("Removed executor {} from registry", peer_id);
+        }
+        Ok(())
+    }
+
+    /// Update executor heartbeat
+    fn update_executor_heartbeat(&mut self, peer_id: &PeerId) -> Result<()> {
+        if let Some(record) = self.executor_records.get_mut(peer_id) {
+            record.last_seen = Self::current_timestamp();
+            record.connection_state = ConnectionState::Connected;
+            debug!("Updated heartbeat for executor {}", peer_id);
+        }
+        Ok(())
+    }
+
+    /// Update connection state when an executor connects/disconnects
+    fn update_executor_connection(&mut self, peer_id: &PeerId, connected: bool) {
+        if let Some(record) = self.executor_records.get_mut(peer_id) {
+            record.update_connection_state(connected);
+            debug!("Updated connection state for executor {}: {}", 
+                  peer_id, if connected { "connected" } else { "disconnected" });
+            self.update_network_stats();
+        }
+    }
+
+    /// Clean up stale executors
+    fn cleanup(&mut self) -> usize {
+        let mut removed_count = 0;
+        let mut to_remove = Vec::new();
+        
+        for (peer_id, record) in &mut self.executor_records {
+            if record.is_stale(self.config.stale_timeout) {
+                if record.connection_state != ConnectionState::Stale {
+                    record.connection_state = ConnectionState::Stale;
+                    debug!("Marked executor {} as stale", peer_id);
+                }
+                
+                if record.should_be_removed(self.config.removal_timeout) {
+                    to_remove.push(*peer_id);
+                }
+            }
+        }
+        
+        for peer_id in to_remove {
+            if self.remove_executor(&peer_id).is_ok() {
+                removed_count += 1;
+                info!("Removed stale executor: {}", peer_id);
+            }
+        }
+        
+        if removed_count > 0 {
+            self.update_network_stats();
+            info!("Cleanup completed: removed {} stale executors", removed_count);
+        }
+        
+        removed_count
+    }
+
+    /// Update network statistics
+    fn update_network_stats(&mut self) {
+        self.network_stats.total_executors = self.executor_records.len() as u32;
+        self.network_stats.connected_executors = self.executor_records
+            .values()
+            .filter(|r| r.connection_state == ConnectionState::Connected)
+            .count() as u32;
+        self.network_stats.total_models = self.model_to_executors.len() as u32;
+        
+        // Update total requests from all executors
+        self.network_stats.total_requests = self.executor_records
+            .values()
+            .map(|r| r.stats.total_requests)
+            .sum();
+        
+        // Update uptime (in seconds since start)
+        self.network_stats.uptime = Self::current_timestamp() - self.network_stats.last_reset;
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct ValidatorConfig {
@@ -136,6 +447,8 @@ async fn main() -> Result<()> {
     // Subscribe to gossipsub topics
     helpers::subscribe_topic(&mut swarm, "lloom/announcements")?;
     helpers::subscribe_topic(&mut swarm, "lloom/executor-updates")?;
+    helpers::subscribe_topic(&mut swarm, "lloom/model-announcements")?;
+    info!("Subscribed to gossipsub topics including model-announcements");
 
     // Register as a validator in Kademlia
     let validator_key = ServiceRole::Validator.to_kad_key();
@@ -161,8 +474,13 @@ async fn main() -> Result<()> {
 
     // Set up periodic tasks
     let mut periodic_interval = time::interval(Duration::from_secs(60));
+    let mut cleanup_interval = time::interval(Duration::from_secs(30));
 
-    // Track known executors with their model information
+    // Initialize model registry
+    let registry_config = RegistryConfig::default();
+    let model_registry = Arc::new(Mutex::new(ModelRegistry::new(registry_config)));
+
+    // Track known executors with their model information (legacy tracking)
     let mut known_executors = HashSet::new();
     let mut executor_models: HashMap<libp2p::PeerId, Vec<String>> = HashMap::new();
 
@@ -170,11 +488,20 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
-                handle_swarm_event(&mut swarm, event, &mut known_executors, &mut executor_models).await;
+                handle_swarm_event(&mut swarm, event, &mut known_executors, &mut executor_models, &model_registry).await;
             }
             _ = periodic_interval.tick() => {
                 // Perform periodic maintenance
-                perform_periodic_tasks(&mut swarm, &known_executors, &executor_models).await;
+                perform_periodic_tasks(&mut swarm, &known_executors, &executor_models, &model_registry).await;
+            }
+            _ = cleanup_interval.tick() => {
+                // Registry cleanup
+                if let Ok(mut registry) = model_registry.lock() {
+                    let removed = registry.cleanup();
+                    if removed > 0 {
+                        debug!("Registry cleanup: removed {} stale executors", removed);
+                    }
+                }
             }
             _ = shutdown_rx.recv() => {
                 info!("Received shutdown signal");
@@ -214,6 +541,7 @@ async fn handle_swarm_event(
     event: SwarmEvent<LloomEvent>,
     known_executors: &mut HashSet<libp2p::PeerId>,
     executor_models: &mut HashMap<libp2p::PeerId, Vec<String>>,
+    model_registry: &Arc<Mutex<ModelRegistry>>,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -223,6 +551,11 @@ async fn handle_swarm_event(
             info!("DEBUG: Validator connection established with {} at {}", peer_id, endpoint.get_remote_address());
             // Add the connected peer to Kademlia for mutual bootstrap
             swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
+            
+            // Update registry connection state
+            if let Ok(mut registry) = model_registry.lock() {
+                registry.update_executor_connection(&peer_id, true);
+            }
             
             // Check if this is an executor by looking up in our known executors
             if known_executors.contains(&peer_id) {
@@ -240,6 +573,11 @@ async fn handle_swarm_event(
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!("Connection closed with {}: {:?}", peer_id, cause);
             
+            // Update registry connection state
+            if let Ok(mut registry) = model_registry.lock() {
+                registry.update_executor_connection(&peer_id, false);
+            }
+            
             // If this was an executor, remove it from our tracking
             if known_executors.contains(&peer_id) {
                 trace!("Executor {} disconnected", peer_id);
@@ -249,23 +587,14 @@ async fn handle_swarm_event(
             }
         }
         SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-            result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
+            result: KadQueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
             ..
         })) => {
             if record.record.key.as_ref() == ServiceRole::Executor.to_kad_key() {
                 if let Ok(peer_id) = libp2p::PeerId::from_bytes(&record.record.value) {
-                    if known_executors.insert(peer_id) {
-                        info!("Discovered new executor: {}", peer_id);
-                        
-                        // Try to derive model information from the executor
-                        // In practice, executors should announce their supported models
-                        // For demonstration, we'll simulate some model discovery
-                        let models = discover_executor_models(&peer_id);
-                        executor_models.insert(peer_id, models);
-                        
-                        // Log connected executors with models at trace level
-                        trace_executor_models(&executor_models);
-                    }
+                    info!("Discovered executor via Kademlia: {}", peer_id);
+                    // Executors should announce their models via ModelAnnouncement messages
+                    // We just note that we've discovered them here
                 }
             }
         }
@@ -285,7 +614,58 @@ async fn handle_swarm_event(
                 propagation_source, message.topic
             );
             
-            // Check if this is an executor announcement with model information
+            // Handle model announcements
+            if message.topic.as_str().contains("model-announcements") {
+                trace!("Model announcement received: {} bytes", message.data.len());
+                
+                // Try to parse as SignedMessage<ModelAnnouncement> (the actual format sent by executor)
+                match serde_json::from_slice::<lloom_core::protocol::SignedModelAnnouncement>(&message.data) {
+                    Ok(signed_announcement) => {
+                        debug!("Successfully parsed signed model announcement from {}",
+                               signed_announcement.payload.executor_peer_id);
+                        
+                        if let Ok(mut registry) = model_registry.lock() {
+                            if let Err(e) = registry.handle_announcement(&signed_announcement.payload) {
+                                warn!("Failed to process model announcement: {}", e);
+                            } else {
+                                info!("✓ Successfully processed model announcement from {} with {} models",
+                                      signed_announcement.payload.executor_peer_id,
+                                      signed_announcement.payload.models.len());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Add detailed error logging
+                        warn!("Failed to parse model announcement message: {}", e);
+                        trace!("Raw message data: {:?}", message.data);
+                        
+                        // Try to parse as string for debugging
+                        if let Ok(msg_str) = std::str::from_utf8(&message.data) {
+                            trace!("Message as string: {}", msg_str);
+                        }
+                        
+                        // Try parsing as unsigned ModelAnnouncement for backwards compatibility
+                        match serde_json::from_slice::<ModelAnnouncement>(&message.data) {
+                            Ok(announcement) => {
+                                warn!("Received unsigned ModelAnnouncement (deprecated format)");
+                                if let Ok(mut registry) = model_registry.lock() {
+                                    if let Err(e) = registry.handle_announcement(&announcement) {
+                                        warn!("Failed to process unsigned model announcement: {}", e);
+                                    } else {
+                                        info!("✓ Processed unsigned model announcement from {}",
+                                              announcement.executor_peer_id);
+                                    }
+                                }
+                            }
+                            Err(e2) => {
+                                error!("Failed to parse as both signed and unsigned ModelAnnouncement: signed={}, unsigned={}", e, e2);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Check if this is an executor announcement with model information (legacy)
             if message.topic.as_str().contains("executor-announcements") {
                 if let Ok(msg_str) = std::str::from_utf8(&message.data) {
                     trace!("Executor announcement: {}", msg_str);
@@ -317,6 +697,7 @@ async fn perform_periodic_tasks(
     swarm: &mut Swarm<LloomBehaviour>,
     known_executors: &HashSet<libp2p::PeerId>,
     executor_models: &HashMap<libp2p::PeerId, Vec<String>>,
+    model_registry: &Arc<Mutex<ModelRegistry>>,
 ) {
     // Refresh our validator registration
     let validator_key = ServiceRole::Validator.to_kad_key();
@@ -337,6 +718,15 @@ async fn perform_periodic_tasks(
         .kademlia
         .get_record(ServiceRole::Executor.to_kad_key().into());
 
+    // Log registry statistics
+    if let Ok(registry) = model_registry.lock() {
+        info!("Registry stats - Executors: {} ({} connected), Models: {}, Requests: {}", 
+              registry.network_stats.total_executors,
+              registry.network_stats.connected_executors,
+              registry.network_stats.total_models,
+              registry.network_stats.total_requests);
+    }
+    
     info!("Periodic maintenance completed. Known executors: {}", known_executors.len());
     
     // Log executor model information at trace level during periodic maintenance
@@ -565,5 +955,101 @@ mod tests {
         let default_port = 9000u16;
         assert!(default_port > 1024); // Above system ports
         assert!(default_port < 65535); // Valid port range
+    }
+
+    #[test]
+    fn test_model_registry_creation() {
+        let registry = ModelRegistry::new(RegistryConfig::default());
+        assert_eq!(registry.executor_records.len(), 0);
+        assert_eq!(registry.model_to_executors.len(), 0);
+        assert_eq!(registry.network_stats.total_executors, 0);
+    }
+
+    #[test]
+    fn test_registry_config_defaults() {
+        let config = RegistryConfig::default();
+        assert_eq!(config.stale_timeout, 90);
+        assert_eq!(config.removal_timeout, 300);
+        assert_eq!(config.max_executors, 1000);
+        assert_eq!(config.max_models_per_executor, 50);
+    }
+
+    #[test]
+    fn test_model_announcement_handling() {
+        let mut registry = ModelRegistry::new(RegistryConfig::default());
+        let peer_id = PeerId::random();
+        
+        let announcement = ModelAnnouncement {
+            executor_peer_id: peer_id.to_string(),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a"
+                .parse::<Address>()
+                .unwrap(),
+            models: vec![
+                ModelDescriptor {
+                    model_id: "gpt-4".to_string(),
+                    backend_type: "openai".to_string(),
+                    capabilities: lloom_core::protocol::ModelCapabilities {
+                        max_context_length: 8192,
+                        features: vec!["chat".to_string()],
+                        architecture: Some("transformer".to_string()),
+                        model_size: Some("175B".to_string()),
+                        performance: None,
+                        metadata: std::collections::HashMap::new(),
+                    },
+                    is_available: true,
+                    pricing: None,
+                }
+            ],
+            announcement_type: AnnouncementType::Initial,
+            timestamp: ModelRegistry::current_timestamp(),
+            nonce: 1,
+            protocol_version: 1,
+        };
+
+        // Test initial registration
+        let result = registry.handle_announcement(&announcement);
+        assert!(result.is_ok());
+        assert_eq!(registry.executor_records.len(), 1);
+        assert!(registry.executor_records.contains_key(&peer_id));
+        assert_eq!(registry.model_to_executors.len(), 1);
+        assert!(registry.model_to_executors.contains_key("gpt-4"));
+    }
+
+    #[test]
+    fn test_stale_executor_cleanup() {
+        let mut registry = ModelRegistry::new(RegistryConfig {
+            stale_timeout: 1, // 1 second for testing
+            removal_timeout: 2, // 2 seconds for testing
+            ..Default::default()
+        });
+        
+        let peer_id = PeerId::random();
+        
+        // Register executor
+        let announcement = ModelAnnouncement {
+            executor_peer_id: peer_id.to_string(),
+            executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a"
+                .parse::<Address>()
+                .unwrap(),
+            models: vec![],
+            announcement_type: AnnouncementType::Initial,
+            timestamp: ModelRegistry::current_timestamp() - 10, // Old timestamp
+            nonce: 1,
+            protocol_version: 1,
+        };
+        
+        registry.handle_announcement(&announcement).unwrap();
+        
+        // Manually set old last_seen time
+        if let Some(record) = registry.executor_records.get_mut(&peer_id) {
+            record.last_seen = ModelRegistry::current_timestamp() - 10; // 10 seconds ago
+        }
+
+        // Run cleanup
+        let removed_count = registry.cleanup();
+        
+        // Should have removed the stale executor
+        assert_eq!(removed_count, 1);
+        assert_eq!(registry.executor_records.len(), 0);
     }
 }

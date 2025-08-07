@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use alloy::primitives::Address;
 use crate::signing::{SignedMessage, SignableMessage};
+use std::collections::HashMap;
 
 /// A request sent from a Client to an Executor.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -115,10 +116,24 @@ impl SignableMessage for LlmRequest {}
 impl SignableMessage for LlmResponse {}
 impl SignableMessage for UsageRecord {}
 
+// Implement SignableMessage for model announcement protocol messages
+impl SignableMessage for ModelAnnouncement {}
+impl SignableMessage for ModelQuery {}
+impl SignableMessage for ModelQueryResponse {}
+impl SignableMessage for ModelUpdate {}
+impl SignableMessage for AcknowledgmentResponse {}
+
 /// Type aliases for commonly used signed messages
 pub type SignedLlmRequest = SignedMessage<LlmRequest>;
 pub type SignedLlmResponse = SignedMessage<LlmResponse>;
 pub type SignedUsageRecord = SignedMessage<UsageRecord>;
+
+/// Type aliases for model announcement protocol signed messages
+pub type SignedModelAnnouncement = SignedMessage<ModelAnnouncement>;
+pub type SignedModelQuery = SignedMessage<ModelQuery>;
+pub type SignedModelQueryResponse = SignedMessage<ModelQueryResponse>;
+pub type SignedModelUpdate = SignedMessage<ModelUpdate>;
+pub type SignedAcknowledgmentResponse = SignedMessage<AcknowledgmentResponse>;
 
 /// Wrapper enum for request messages to support both signed and unsigned variants
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -127,6 +142,14 @@ pub enum RequestMessage {
     LlmRequest(LlmRequest),
     /// Signed LLM request (with cryptographic signature)
     SignedLlmRequest(SignedLlmRequest),
+    
+    // Model announcement protocol messages
+    /// Model announcement from executor to validator
+    ModelAnnouncement(SignedMessage<ModelAnnouncement>),
+    /// Model query from client to validator
+    ModelQuery(SignedMessage<ModelQuery>),
+    /// Model update from executor to validator
+    ModelUpdate(SignedMessage<ModelUpdate>),
 }
 
 /// Wrapper enum for response messages to support both signed and unsigned variants
@@ -136,6 +159,388 @@ pub enum ResponseMessage {
     LlmResponse(LlmResponse),
     /// Signed LLM response (with cryptographic signature)
     SignedLlmResponse(SignedLlmResponse),
+    
+    // Model announcement protocol responses
+    /// Response to model query
+    ModelQueryResponse(SignedMessage<ModelQueryResponse>),
+    /// Acknowledgment response for announcements and updates
+    AcknowledgmentResponse(SignedMessage<AcknowledgmentResponse>),
+}
+
+// ============================================================================
+// Model Announcement Protocol Messages
+// ============================================================================
+
+/// Announcement message sent by executors to validators
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelAnnouncement {
+    /// Executor's peer ID
+    pub executor_peer_id: String, // Using String for libp2p::PeerId compatibility
+    
+    /// Executor's EVM address for on-chain verification
+    pub executor_address: Address,
+    
+    /// List of supported models with their capabilities
+    pub models: Vec<ModelDescriptor>,
+    
+    /// Announcement type (initial/update/removal)
+    pub announcement_type: AnnouncementType,
+    
+    /// Unix timestamp of the announcement
+    pub timestamp: u64,
+    
+    /// Nonce for replay protection
+    pub nonce: u64,
+    
+    /// Protocol version for compatibility
+    pub protocol_version: u8,
+}
+
+/// Individual model descriptor with capabilities
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ModelDescriptor {
+    /// Model identifier (e.g., "gpt-4", "llama-2-7b")
+    pub model_id: String,
+    
+    /// Backend type (e.g., "openai", "lmstudio", "custom")
+    pub backend_type: String,
+    
+    /// Model capabilities and metadata
+    pub capabilities: ModelCapabilities,
+    
+    /// Current availability status
+    pub is_available: bool,
+    
+    /// Pricing information (optional)
+    pub pricing: Option<ModelPricing>,
+}
+
+/// Model capabilities and metadata
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ModelCapabilities {
+    /// Maximum context length in tokens
+    pub max_context_length: u32,
+    
+    /// Supported features
+    pub features: Vec<String>, // e.g., ["chat", "completion", "embeddings"]
+    
+    /// Model architecture (optional)
+    pub architecture: Option<String>,
+    
+    /// Model size/parameters (optional)
+    pub model_size: Option<String>,
+    
+    /// Performance metrics (optional)
+    pub performance: Option<PerformanceMetrics>,
+    
+    /// Additional metadata as key-value pairs
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Performance metrics for a model
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PerformanceMetrics {
+    /// Average tokens per second
+    pub avg_tokens_per_second: Option<f64>,
+    
+    /// Average time to first token (in seconds)
+    pub avg_time_to_first_token: Option<f64>,
+    
+    /// Success rate (0.0 to 1.0)
+    pub success_rate: Option<f64>,
+    
+    /// Average latency in milliseconds
+    pub avg_latency_ms: Option<u64>,
+}
+
+/// Pricing information for a model
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ModelPricing {
+    /// Price per input token in wei (as string for large numbers)
+    pub input_token_price: String,
+    
+    /// Price per output token in wei
+    pub output_token_price: String,
+    
+    /// Minimum request fee (if any)
+    pub minimum_fee: Option<String>,
+}
+
+/// Type of announcement
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum AnnouncementType {
+    /// Initial announcement when executor connects
+    Initial,
+    /// Update to existing model list
+    Update,
+    /// Graceful removal before disconnect
+    Removal,
+    /// Heartbeat to maintain presence
+    Heartbeat,
+}
+
+/// Query from client to validator for model information
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelQuery {
+    /// Type of query
+    pub query_type: ModelQueryType,
+    
+    /// Optional filters for the query
+    pub filters: Option<QueryFilters>,
+    
+    /// Maximum number of results (for pagination)
+    pub limit: Option<u32>,
+    
+    /// Offset for pagination
+    pub offset: Option<u32>,
+    
+    /// Query ID for response correlation
+    pub query_id: String,
+    
+    /// Timestamp of the query
+    pub timestamp: u64,
+}
+
+/// Type of model query
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ModelQueryType {
+    /// List all available models
+    ListAllModels,
+    /// Find executors for a specific model
+    FindModel(String),
+    /// Get detailed info about specific executors
+    ExecutorInfo(Vec<String>), // Vec<libp2p::PeerId> as Strings
+    /// Search models by capabilities
+    SearchByCapabilities,
+    /// Get statistics about model availability
+    GetStatistics,
+}
+
+/// Filters for model queries
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QueryFilters {
+    /// Filter by backend type
+    pub backend_type: Option<String>,
+    
+    /// Minimum required context length
+    pub min_context_length: Option<u32>,
+    
+    /// Required features
+    pub required_features: Option<Vec<String>>,
+    
+    /// Maximum price per token (in wei)
+    pub max_price: Option<String>,
+    
+    /// Only show available models
+    pub only_available: bool,
+    
+    /// Minimum success rate
+    pub min_success_rate: Option<f64>,
+}
+
+/// Response from validator to client's model query
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelQueryResponse {
+    /// Query ID this responds to
+    pub query_id: String,
+    
+    /// Query results
+    pub result: QueryResult,
+    
+    /// Total count (for pagination)
+    pub total_count: Option<u32>,
+    
+    /// Response timestamp
+    pub timestamp: u64,
+    
+    /// Validator's peer ID
+    pub validator_peer_id: String, // libp2p::PeerId as String
+}
+
+/// Query result variants
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum QueryResult {
+    /// List of models with their executors
+    ModelList(Vec<ModelEntry>),
+    /// List of executors for a specific model
+    ExecutorList(Vec<ExecutorEntry>),
+    /// Detailed executor information
+    ExecutorDetails(Vec<ExecutorDetail>),
+    /// Network statistics
+    Statistics(NetworkStatistics),
+    /// Error response
+    Error(QueryError),
+}
+
+/// Model entry in query response
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelEntry {
+    /// Model identifier
+    pub model_id: String,
+    
+    /// Number of executors supporting this model
+    pub executor_count: u32,
+    
+    /// List of executor peer IDs
+    pub executors: Vec<String>, // Vec<libp2p::PeerId> as Strings
+    
+    /// Aggregated capabilities (best available)
+    pub capabilities: ModelCapabilities,
+    
+    /// Average pricing across executors
+    pub avg_pricing: Option<ModelPricing>,
+}
+
+/// Executor entry in query response
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ExecutorEntry {
+    /// Executor's peer ID
+    pub peer_id: String, // libp2p::PeerId as String
+    
+    /// Executor's EVM address
+    pub evm_address: Address,
+    
+    /// Connection status
+    pub is_connected: bool,
+    
+    /// Last seen timestamp
+    pub last_seen: u64,
+    
+    /// Reliability score (0.0 to 1.0)
+    pub reliability_score: Option<f64>,
+}
+
+/// Detailed executor information
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ExecutorDetail {
+    /// Basic executor info
+    pub executor: ExecutorEntry,
+    
+    /// All models supported by this executor
+    pub models: Vec<ModelDescriptor>,
+    
+    /// Performance statistics
+    pub stats: Option<ExecutorStatistics>,
+}
+
+/// Error response for queries
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QueryError {
+    /// Error code
+    pub code: u32,
+    
+    /// Error message
+    pub message: String,
+    
+    /// Additional details
+    pub details: Option<String>,
+}
+
+/// Network statistics
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct NetworkStatistics {
+    /// Total number of executors
+    pub total_executors: u32,
+    
+    /// Total number of unique models
+    pub total_models: u32,
+    
+    /// Currently connected executors
+    pub connected_executors: u32,
+    
+    /// Total requests processed
+    pub total_requests: u64,
+    
+    /// Network uptime in seconds
+    pub uptime: u64,
+    
+    /// Last reset timestamp
+    pub last_reset: u64,
+}
+
+/// Executor performance statistics
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExecutorStatistics {
+    /// Total requests handled
+    pub total_requests: u64,
+    
+    /// Successful requests
+    pub successful_requests: u64,
+    
+    /// Failed requests
+    pub failed_requests: u64,
+    
+    /// Average response time in ms
+    pub avg_response_time: u64,
+    
+    /// Total tokens processed
+    pub total_tokens: u64,
+    
+    /// Last updated timestamp
+    pub last_updated: u64,
+}
+
+/// Update message for model changes
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelUpdate {
+    /// Executor's peer ID
+    pub executor_peer_id: String, // libp2p::PeerId as String
+    
+    /// Type of update
+    pub update_type: UpdateType,
+    
+    /// Updated model information
+    pub updates: Vec<ModelUpdateEntry>,
+    
+    /// Timestamp of the update
+    pub timestamp: u64,
+    
+    /// Update sequence number for ordering
+    pub sequence: u64,
+}
+
+/// Type of model update
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum UpdateType {
+    /// Add new models
+    AddModels,
+    /// Remove models
+    RemoveModels,
+    /// Update model capabilities
+    UpdateCapabilities,
+    /// Update pricing
+    UpdatePricing,
+    /// Update availability
+    UpdateAvailability,
+}
+
+/// Individual model update entry
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelUpdateEntry {
+    /// Model identifier
+    pub model_id: String,
+    
+    /// New descriptor (for adds/updates)
+    pub descriptor: Option<ModelDescriptor>,
+    
+    /// Update reason
+    pub reason: Option<String>,
+}
+
+/// Simple acknowledgment response
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AcknowledgmentResponse {
+    /// Request ID being acknowledged
+    pub request_id: String,
+    
+    /// Success status
+    pub success: bool,
+    
+    /// Optional message
+    pub message: Option<String>,
+    
+    /// Timestamp
+    pub timestamp: u64,
 }
 
 #[cfg(test)]

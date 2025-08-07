@@ -8,7 +8,11 @@ use serde::Deserialize;
 use lloom_core::{
     identity::Identity,
     network::{LloomBehaviour, LloomEvent, helpers},
-    protocol::{LlmRequest, LlmResponse, ServiceRole, RequestMessage, ResponseMessage, constants::MAX_MESSAGE_AGE_SECS},
+    protocol::{
+        LlmRequest, LlmResponse, ServiceRole, RequestMessage, ResponseMessage,
+        constants::MAX_MESSAGE_AGE_SECS, ModelQuery, ModelQueryResponse, ModelQueryType,
+        QueryFilters, QueryResult as ProtocolQueryResult, ModelEntry, ExecutorEntry
+    },
     signing::{SignableMessage},
 };
 use futures::StreamExt;
@@ -60,9 +64,9 @@ struct Args {
     #[arg(long, default_value = "gpt-3.5-turbo")]
     model: String,
     
-    /// Prompt to send to the model
-    #[arg(long, required = true)]
-    prompt: String,
+    /// Prompt to send to the model (not required when using discovery flags)
+    #[arg(long)]
+    prompt: Option<String>,
     
     /// Optional system prompt
     #[arg(long)]
@@ -87,6 +91,14 @@ struct Args {
     /// Enable message signing (default: true)
     #[arg(long, default_value = "true")]
     enable_signing: bool,
+
+    /// Discover and list all available models
+    #[arg(long)]
+    discover_models: bool,
+
+    /// Query for executors supporting a specific model
+    #[arg(long)]
+    query_model: Option<String>,
 }
 
 /// Client state for tracking the request lifecycle
@@ -96,6 +108,384 @@ struct ClientState {
     pending_request: Option<(OutboundRequestId, PeerId)>,
     response_received: Option<LlmResponse>,
     discovery_complete: bool,
+}
+
+/// Model discovery cache for client-side model information
+#[derive(Debug, Default)]
+struct ModelDiscoveryCache {
+    /// Cached model entries from validators
+    models: std::collections::HashMap<String, ModelEntry>,
+    
+    /// Cached executor entries
+    executors: std::collections::HashMap<libp2p::PeerId, ExecutorEntry>,
+    
+    /// Last cache update time
+    last_updated: Option<std::time::Instant>,
+    
+    /// Cache TTL (5 minutes)
+    ttl: std::time::Duration,
+}
+
+impl ModelDiscoveryCache {
+    fn new() -> Self {
+        Self {
+            models: std::collections::HashMap::new(),
+            executors: std::collections::HashMap::new(),
+            last_updated: None,
+            ttl: std::time::Duration::from_secs(300),
+        }
+    }
+    
+    fn is_expired(&self) -> bool {
+        match self.last_updated {
+            Some(last_update) => last_update.elapsed() > self.ttl,
+            None => true,
+        }
+    }
+    
+    fn update(&mut self, response: &ModelQueryResponse) {
+        match &response.result {
+            ProtocolQueryResult::ModelList(models) => {
+                for model in models {
+                    self.models.insert(model.model_id.clone(), model.clone());
+                    for executor_id_str in &model.executors {
+                        if let Ok(executor_id) = executor_id_str.parse::<libp2p::PeerId>() {
+                            // Create basic executor entry if not exists
+                            self.executors.entry(executor_id).or_insert_with(|| ExecutorEntry {
+                                peer_id: executor_id_str.clone(),
+                                evm_address: Default::default(), // Will be filled later
+                                is_connected: true,
+                                last_seen: response.timestamp,
+                                reliability_score: None,
+                            });
+                        }
+                    }
+                }
+            }
+            ProtocolQueryResult::ExecutorList(executors) => {
+                for executor in executors {
+                    if let Ok(executor_id) = executor.peer_id.parse::<libp2p::PeerId>() {
+                        self.executors.insert(executor_id, executor.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.last_updated = Some(std::time::Instant::now());
+    }
+    
+    fn clear(&mut self) {
+        self.models.clear();
+        self.executors.clear();
+        self.last_updated = None;
+    }
+}
+
+/// Discover all available models in the network
+async fn discover_models(
+    swarm: &mut Swarm<LloomBehaviour>,
+    identity: &Identity,
+    cache: &mut ModelDiscoveryCache,
+) -> Result<Vec<ModelEntry>> {
+    info!("Starting model discovery...");
+    
+    // Return cached results if still valid
+    if !cache.is_expired() && !cache.models.is_empty() {
+        info!("Using cached model discovery results");
+        return Ok(cache.models.values().cloned().collect());
+    }
+
+    // Create model query for all models
+    let query = ModelQuery {
+        query_type: ModelQueryType::ListAllModels,
+        filters: Some(QueryFilters {
+            backend_type: None,
+            min_context_length: None,
+            required_features: None,
+            max_price: None,
+            only_available: true,
+            min_success_rate: None,
+        }),
+        limit: Some(100),
+        offset: None,
+        query_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    };
+
+    // Send query to connected validators and collect responses
+    send_model_query(swarm, identity, query, cache).await
+}
+
+/// Find executors supporting a specific model
+async fn find_executors_for_model(
+    swarm: &mut Swarm<LloomBehaviour>,
+    identity: &Identity,
+    cache: &mut ModelDiscoveryCache,
+    model_name: &str,
+) -> Result<Vec<ExecutorEntry>> {
+    info!("Finding executors for model: {}", model_name);
+
+    // Check cache first
+    if !cache.is_expired() {
+        if let Some(model_entry) = cache.models.get(model_name) {
+            let executors: Vec<ExecutorEntry> = model_entry.executors.iter()
+                .filter_map(|executor_id_str| {
+                    executor_id_str.parse::<libp2p::PeerId>().ok()
+                        .and_then(|id| cache.executors.get(&id).cloned())
+                })
+                .collect();
+            
+            if !executors.is_empty() {
+                info!("Found {} cached executors for model {}", executors.len(), model_name);
+                return Ok(executors);
+            }
+        }
+    }
+
+    // Create query for specific model
+    let query = ModelQuery {
+        query_type: ModelQueryType::FindModel(model_name.to_string()),
+        filters: Some(QueryFilters {
+            backend_type: None,
+            min_context_length: None,
+            required_features: None,
+            max_price: None,
+            only_available: true,
+            min_success_rate: None,
+        }),
+        limit: Some(50),
+        offset: None,
+        query_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    };
+
+    // Send query and extract executors from response
+    let models = send_model_query(swarm, identity, query, cache).await?;
+    
+    let executors: Vec<ExecutorEntry> = models.into_iter()
+        .filter(|m| m.model_id == model_name)
+        .flat_map(|m| m.executors)
+        .filter_map(|executor_id_str| {
+            executor_id_str.parse::<libp2p::PeerId>().ok()
+                .and_then(|id| cache.executors.get(&id).cloned())
+        })
+        .collect();
+
+    info!("Found {} executors for model {}", executors.len(), model_name);
+    Ok(executors)
+}
+
+/// List all models with their capabilities
+async fn list_all_models(
+    swarm: &mut Swarm<LloomBehaviour>,
+    identity: &Identity,
+    cache: &mut ModelDiscoveryCache,
+) -> Result<Vec<ModelEntry>> {
+    discover_models(swarm, identity, cache).await
+}
+
+/// Send a model query to validators and wait for responses
+async fn send_model_query(
+    swarm: &mut Swarm<LloomBehaviour>,
+    identity: &Identity,
+    query: ModelQuery,
+    cache: &mut ModelDiscoveryCache,
+) -> Result<Vec<ModelEntry>> {
+    use std::collections::HashSet;
+    
+    // Clear cache for fresh query
+    cache.clear();
+    
+    // Find connected validators
+    let connected_peers: Vec<libp2p::PeerId> = swarm.connected_peers().cloned().collect();
+    if connected_peers.is_empty() {
+        return Err(anyhow!("No connected peers for model discovery"));
+    }
+
+    info!("Sending model query to {} connected peers", connected_peers.len());
+
+    // Sign and prepare the query
+    let signed_query = query.sign_blocking(&identity.wallet)
+        .map_err(|e| anyhow!("Failed to sign model query: {}", e))?;
+    
+    let request_message = RequestMessage::ModelQuery(signed_query);
+    
+    // Send queries to all connected peers (assuming they are validators)
+    let mut request_ids = Vec::new();
+    for peer_id in &connected_peers {
+        match swarm.behaviour_mut().request_response.send_request(peer_id, request_message.clone()) {
+            request_id => {
+                info!("Sent model query to validator {}", peer_id);
+                request_ids.push((request_id, *peer_id));
+            }
+        }
+    }
+
+    if request_ids.is_empty() {
+        return Err(anyhow!("Failed to send any model queries"));
+    }
+
+    // Wait for responses with timeout
+    let query_timeout = Duration::from_secs(5);
+    let start_time = std::time::Instant::now();
+    let mut responses_received = 0;
+    let expected_responses = request_ids.len();
+
+    while start_time.elapsed() < query_timeout && responses_received < expected_responses {
+        if let Ok(event) = tokio::time::timeout(Duration::from_millis(100), swarm.select_next_some()).await {
+            if let SwarmEvent::Behaviour(LloomEvent::RequestResponse(
+                libp2p::request_response::Event::Message {
+                    message: libp2p::request_response::Message::Response { response, .. },
+                    peer,
+                    ..
+                }
+            )) = event {
+                if let ResponseMessage::ModelQueryResponse(signed_response) = response {
+                    info!("Received model query response from {}", peer);
+                    
+                    // Verify signature if signing is enabled
+                    match signed_response.verify_with_time_window(MAX_MESSAGE_AGE_SECS) {
+                        Ok(_) => {
+                            cache.update(&signed_response.payload);
+                            responses_received += 1;
+                        }
+                        Err(e) => {
+                            warn!("Model query response signature verification failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if responses_received == 0 {
+        warn!("No model query responses received within timeout");
+        return Err(anyhow!("Model discovery timeout - no responses received"));
+    }
+
+    info!("Model discovery completed: {} responses received", responses_received);
+    Ok(cache.models.values().cloned().collect())
+}
+
+/// Handle discovery commands (--discover-models or --query-model)
+async fn handle_discovery_commands(
+    swarm: &mut Swarm<LloomBehaviour>,
+    args: &Args,
+    identity: &Identity,
+    cache: &mut ModelDiscoveryCache,
+) -> Result<()> {
+    // Wait for initial connections
+    info!("Waiting for connections to stabilize...");
+    sleep(Duration::from_secs(3)).await;
+    
+    // Bootstrap Kademlia DHT
+    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+        warn!("Failed to bootstrap Kademlia: {:?}", e);
+    }
+    
+    // Wait for bootstrap to complete
+    sleep(Duration::from_secs(2)).await;
+
+    if args.discover_models {
+        info!("Discovering all available models...");
+        match discover_models(swarm, identity, cache).await {
+            Ok(models) => {
+                display_models(&models);
+            }
+            Err(e) => {
+                error!("Model discovery failed: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    if let Some(ref model_name) = args.query_model {
+        info!("Finding executors for model: {}", model_name);
+        match find_executors_for_model(swarm, identity, cache, model_name).await {
+            Ok(executors) => {
+                display_executors_for_model(model_name, &executors);
+            }
+            Err(e) => {
+                error!("Executor discovery failed for model {}: {}", model_name, e);
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Display models in a formatted table
+fn display_models(models: &[ModelEntry]) {
+    if models.is_empty() {
+        println!("No models found in the network");
+        return;
+    }
+
+    println!("\n📋 Available Models:");
+    println!("┌─────────────────────────┬─────────────┬──────────────────┬────────────┐");
+    println!("│ Model ID                │ Executors   │ Context Length   │ Price      │");
+    println!("├─────────────────────────┼─────────────┼──────────────────┼────────────┤");
+    
+    for model in models {
+        let executor_count = model.executors.len();
+        let context_length = model.capabilities.max_context_length;
+        let price = model.avg_pricing.as_ref()
+            .map(|p| format!("{} wei", &p.input_token_price))
+            .unwrap_or_else(|| "N/A".to_string());
+        
+        println!("│ {:23} │ {:11} │ {:16} │ {:10} │",
+                 truncate_string(&model.model_id, 23),
+                 executor_count,
+                 if context_length > 0 { context_length.to_string() } else { "N/A".to_string() },
+                 truncate_string(&price, 10));
+    }
+    
+    println!("└─────────────────────────┴─────────────┴──────────────────┴────────────┘");
+    println!("Total: {} models found", models.len());
+}
+
+/// Display executors for a specific model
+fn display_executors_for_model(model_name: &str, executors: &[ExecutorEntry]) {
+    if executors.is_empty() {
+        println!("No executors found for model: {}", model_name);
+        return;
+    }
+
+    println!("\n🔧 Executors for model '{}':", model_name);
+    println!("┌─────────────────────────────────────────────────┬─────────────┬──────────────┐");
+    println!("│ Peer ID                                         │ Connected   │ Reliability  │");
+    println!("├─────────────────────────────────────────────────┼─────────────┼──────────────┤");
+    
+    for executor in executors {
+        let connected = if executor.is_connected { "✓" } else { "✗" };
+        let reliability = executor.reliability_score
+            .map(|score| format!("{:.1}%", score * 100.0))
+            .unwrap_or_else(|| "N/A".to_string());
+        
+        println!("│ {:47} │ {:11} │ {:12} │",
+                 truncate_string(&executor.peer_id, 47),
+                 connected,
+                 reliability);
+    }
+    
+    println!("└─────────────────────────────────────────────────┴─────────────┴──────────────┘");
+    println!("Total: {} executors found", executors.len());
+}
+
+/// Helper function to truncate strings for display
+fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
 }
 
 #[tokio::main]
@@ -156,7 +546,9 @@ async fn main() -> Result<()> {
     
     info!("Starting Lloom Client with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
     info!("Model: {}", args.model);
-    info!("Prompt: {}", args.prompt);
+    if let Some(ref prompt) = args.prompt {
+        info!("Prompt: {}", prompt);
+    }
     
     // Load or generate identity
     let identity = match &final_private_key {
@@ -210,6 +602,32 @@ async fn main() -> Result<()> {
     helpers::subscribe_topic(&mut swarm, "lloom/executor-announcements")?;
     
     let mut client_state = ClientState::default();
+    let mut discovery_cache = ModelDiscoveryCache::new();
+    
+    // Handle model discovery commands first
+    if args.discover_models || args.query_model.is_some() {
+        let discovery_result = timeout(
+            Duration::from_secs(args.timeout_secs),
+            handle_discovery_commands(&mut swarm, &args, &identity, &mut discovery_cache)
+        ).await;
+        
+        match discovery_result {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(e)) => {
+                error!("Discovery command failed: {}", e);
+                std::process::exit(1);
+            }
+            Err(_) => {
+                error!("Discovery command timed out after {} seconds", args.timeout_secs);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Require prompt for normal operation
+    if args.prompt.is_none() && !args.discover_models && args.query_model.is_none() {
+        return Err(anyhow!("Prompt is required when not using discovery commands (--discover-models or --query-model)"));
+    }
     
     // Run the client with timeout
     let result = timeout(
@@ -321,7 +739,7 @@ async fn run_client(
                     // Prepare LLM request
                     let request = LlmRequest {
                         model: args.model.clone(),
-                        prompt: args.prompt.clone(),
+                        prompt: args.prompt.as_ref().unwrap().clone(),
                         system_prompt: args.system_prompt.clone(),
                         temperature: args.temperature,
                         max_tokens: args.max_tokens,
@@ -397,7 +815,7 @@ async fn handle_swarm_event(
             debug!("Connection closed with {}: {:?}", peer_id, cause);
         }
         SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-            result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
+            result: kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })),
             ..
         })) => {
             info!("DEBUG: ✅ Found {} executor providers via Kademlia", providers.len());
@@ -411,7 +829,7 @@ async fn handle_swarm_event(
             info!("DEBUG: Total known executors now: {}", state.discovered_executors.len());
         }
         SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-            result: QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
+            result: kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(record))),
             ..
         })) => {
             if record.record.key.as_ref() == ServiceRole::Executor.to_kad_key() {
@@ -423,7 +841,7 @@ async fn handle_swarm_event(
             }
         }
         SwarmEvent::Behaviour(LloomEvent::Kademlia(kad::Event::OutboundQueryProgressed {
-            result: QueryResult::GetProviders(Ok(kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. })),
+            result: kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. })),
             ..
         })) => {
             debug!("Kademlia provider query finished");
@@ -470,6 +888,14 @@ async fn handle_swarm_event(
                                       signed_resp.payload.inbound_tokens, signed_resp.payload.outbound_tokens);
                                 Some(signed_resp.payload.clone())
                             }
+                        }
+                        ResponseMessage::ModelQueryResponse(_) => {
+                            debug!("Received model query response from {}", peer);
+                            None // Not handled by client
+                        }
+                        ResponseMessage::AcknowledgmentResponse(_) => {
+                            debug!("Received acknowledgment response from {}", peer);
+                            None // Not handled by client
                         }
                     };
                     
@@ -529,7 +955,7 @@ mod tests {
         ]).unwrap();
         
         assert_eq!(args.bootstrap_nodes, vec!["/ip4/127.0.0.1/tcp/9000"]);
-        assert_eq!(args.prompt, "Hello world");
+        assert_eq!(args.prompt, Some("Hello world".to_string()));
         assert_eq!(args.model, "gpt-3.5-turbo"); // default
         assert_eq!(args.timeout_secs, 120); // default
         assert_eq!(args.private_key, None);
@@ -557,7 +983,7 @@ mod tests {
         assert_eq!(args.bootstrap_nodes.len(), 2);
         assert_eq!(args.bootstrap_nodes[0], "/ip4/127.0.0.1/tcp/9000");
         assert_eq!(args.bootstrap_nodes[1], "/ip4/192.168.1.1/tcp/8000");
-        assert_eq!(args.prompt, "Test prompt");
+        assert_eq!(args.prompt, Some("Test prompt".to_string()));
         assert_eq!(args.model, "gpt-4");
         assert_eq!(args.system_prompt, Some("You are helpful".to_string()));
         assert_eq!(args.temperature, Some(0.7));
@@ -770,13 +1196,15 @@ mod tests {
             private_key: None,
             bootstrap_nodes: vec!["/ip4/127.0.0.1/tcp/9000".to_string()],
             model: "gpt-3.5-turbo".to_string(),
-            prompt: "Hello".to_string(),
+            prompt: Some("Hello".to_string()),
             system_prompt: None,
             temperature: None,
             max_tokens: None,
             timeout_secs: 120,
             debug: false,
             enable_signing: true,
+            discover_models: false,
+            query_model: None,
         };
         
         let debug_str = format!("{:?}", args);
