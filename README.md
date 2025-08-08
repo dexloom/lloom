@@ -1,4 +1,4 @@
-# 🌐 Lloom - Decentralized AI Marketplace
+# 🌐 Lloom - Inference protocol. Peer-to-Peer
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
