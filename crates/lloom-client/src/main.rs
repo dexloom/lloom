@@ -45,7 +45,7 @@ struct NetworkConfig {
     bootstrap_nodes: Vec<String>,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to TOML configuration file
@@ -99,6 +99,10 @@ struct Args {
     /// Query for executors supporting a specific model
     #[arg(long)]
     query_model: Option<String>,
+
+    /// Run a demo query with predefined settings (connects to default validator, uses gpt-oss:20b model)
+    #[arg(long)]
+    demo: bool,
 }
 
 /// Client state for tracking the request lifecycle
@@ -539,14 +543,32 @@ async fn main() -> Result<()> {
         (args.private_key.clone(), args.bootstrap_nodes.clone())
     };
     
+    // Handle demo mode - override settings with demo defaults
+    let (final_bootstrap_nodes, final_model, final_prompt) = if args.demo {
+        println!("🚀 Running Lloom Demo!");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("📡 Connecting to default validator: /ip4/67.220.95.247/tcp/3099");
+        println!("🤖 Using model: gpt-oss:20b");
+        println!("💬 Sending prompt: Please introduce yourself!");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        let demo_bootstrap = vec!["/ip4/67.220.95.247/tcp/3099".to_string()];
+        let demo_model = "gpt-oss:20b".to_string();
+        let demo_prompt = Some("Please introduce yourself!".to_string());
+        
+        (demo_bootstrap, demo_model, demo_prompt)
+    } else {
+        (final_bootstrap_nodes, args.model.clone(), args.prompt.clone())
+    };
+    
     // Validate bootstrap nodes are provided
     if final_bootstrap_nodes.is_empty() {
         return Err(anyhow!("At least one bootstrap node is required (via --bootstrap-nodes or config file)"));
     }
     
     info!("Starting Lloom Client with signing {}", if args.enable_signing { "enabled" } else { "disabled" });
-    info!("Model: {}", args.model);
-    if let Some(ref prompt) = args.prompt {
+    info!("Model: {}", final_model);
+    if let Some(ref prompt) = final_prompt {
         info!("Prompt: {}", prompt);
     }
     
@@ -604,8 +626,8 @@ async fn main() -> Result<()> {
     let mut client_state = ClientState::default();
     let mut discovery_cache = ModelDiscoveryCache::new();
     
-    // Handle model discovery commands first
-    if args.discover_models || args.query_model.is_some() {
+    // Handle model discovery commands first (but not in demo mode)
+    if !args.demo && (args.discover_models || args.query_model.is_some()) {
         let discovery_result = timeout(
             Duration::from_secs(args.timeout_secs),
             handle_discovery_commands(&mut swarm, &args, &identity, &mut discovery_cache)
@@ -624,15 +646,22 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Require prompt for normal operation
-    if args.prompt.is_none() && !args.discover_models && args.query_model.is_none() {
-        return Err(anyhow!("Prompt is required when not using discovery commands (--discover-models or --query-model)"));
+    // Require prompt for normal operation (demo provides its own prompt)
+    if final_prompt.is_none() && !args.discover_models && args.query_model.is_none() && !args.demo {
+        return Err(anyhow!("Prompt is required when not using discovery commands (--discover-models, --query-model, or --demo)"));
+    }
+    
+    // Create a modified args struct for demo mode
+    let mut runtime_args = args.clone();
+    if args.demo {
+        runtime_args.model = final_model;
+        runtime_args.prompt = final_prompt;
     }
     
     // Run the client with timeout
     let result = timeout(
         Duration::from_secs(args.timeout_secs),
-        run_client(&mut swarm, &args, &mut client_state, &identity)
+        run_client(&mut swarm, &runtime_args, &mut client_state, &identity)
     ).await;
     
     match result {
@@ -995,19 +1024,19 @@ mod tests {
 
     #[test]
     fn test_args_missing_required() {
-        // Missing prompt
+        // Missing prompt (should succeed because prompt is optional at parse time)
         let result = Args::try_parse_from(&[
             "client",
             "--bootstrap-nodes", "/ip4/127.0.0.1/tcp/9000"
         ]);
-        assert!(result.is_err());
+        assert!(result.is_ok());
         
-        // Missing bootstrap nodes
+        // Missing bootstrap nodes (should succeed because bootstrap nodes can come from config)
         let result = Args::try_parse_from(&[
             "client",
             "--prompt", "Hello world"
         ]);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1205,11 +1234,39 @@ mod tests {
             enable_signing: true,
             discover_models: false,
             query_model: None,
+            demo: false,
         };
         
         let debug_str = format!("{:?}", args);
         assert!(debug_str.contains("Args"));
         assert!(debug_str.contains("gpt-3.5-turbo"));
         assert!(debug_str.contains("Hello"));
+    }
+    
+    #[test]
+    fn test_demo_flag() {
+        let args = Args::try_parse_from(&[
+            "client",
+            "--demo"
+        ]).unwrap();
+        
+        assert!(args.demo);
+        assert!(!args.discover_models);
+        assert_eq!(args.query_model, None);
+        assert_eq!(args.model, "gpt-3.5-turbo"); // Default before demo override
+    }
+    
+    #[test]
+    fn test_demo_with_other_args() {
+        let args = Args::try_parse_from(&[
+            "client",
+            "--demo",
+            "--debug",
+            "--timeout-secs", "60"
+        ]).unwrap();
+        
+        assert!(args.demo);
+        assert!(args.debug);
+        assert_eq!(args.timeout_secs, 60);
     }
 }
