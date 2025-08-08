@@ -79,7 +79,7 @@ anvil --version
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/lloom/lloom.git
+git clone https://github.com/dexloom/lloom.git
 cd lloom
 
 # If you have a specific branch or tag

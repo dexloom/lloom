@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Lloom Team"]
 license = "MIT"
-repository = "https://github.com/lloom/lloom"
+repository = "https://github.com/dexloom/lloom"
 
 [workspace.dependencies]
 # Core dependencies

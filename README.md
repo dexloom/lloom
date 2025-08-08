@@ -1,66 +1,136 @@
-## Foundry
+# 🌐 Lloom - Decentralized AI Marketplace
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+[![Built with libp2p](https://img.shields.io/badge/Built%20with-libp2p-blue.svg)](https://libp2p.io)
 
-Foundry consists of:
+**Lloom** is a cutting-edge decentralized peer-to-peer network that creates a trustless marketplace for Large Language Model (LLM) services. Built with Rust for blazing-fast performance and rock-solid reliability, Lloom enables direct connections between AI consumers and providers without intermediaries.
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## ✨ Key Features
 
-## Documentation
+### 🔐 **Cryptographically Secure**
+- EIP-712 structured data signing for tamper-proof messages
+- Ethereum-compatible identity system with wallet integration
+- Dual-signature verification ensuring accountability
+- Replay attack protection with nonce management
 
-https://book.getfoundry.sh/
+### 🌍 **Truly Decentralized**
+- No single point of failure or control
+- Peer-to-peer communication via libp2p networking stack
+- Kademlia DHT for distributed discovery
+- Self-organizing network topology
 
-## Usage
+### 🤖 **Universal LLM Support**
+- Compatible with OpenAI, LMStudio, and custom backends
+- Dynamic model discovery and announcement protocol
+- Real-time capability matching
+- Automatic executor selection based on requirements
 
-### Build
+### 💰 **Transparent Economics**
+- On-chain settlement with smart contracts
+- Granular token usage tracking (input/output)
+- Market-driven pricing discovery
+- Fair compensation for compute providers
 
-```shell
-$ forge build
+## 🚀 Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/dexloom/lloom
+cd lloom
+
+# Build the project
+cargo build --release
+
+# Run a local validator node
+cargo run --bin lloom-validator
+
+# In another terminal, start an executor
+cargo run --bin lloom-executor
+
+# Finally, run a client to make requests
+cargo run --bin lloom-client
 ```
 
-### Test
+## 🏗️ Architecture
 
-```shell
-$ forge test
+Lloom operates with three primary node types:
+
+- **🔹 Clients**: Request LLM inference services and pay for usage
+- **🔸 Executors**: Provide computational resources and earn tokens
+- **🔺 Validators**: Maintain network integrity and facilitate discovery
+
+```mermaid
+graph TD
+    C[Client] -->|Signed Request| E[Executor]
+    E -->|Model Announcement| V[Validator]
+    C -->|Query Models| V
+    V -->|Model Registry| V
+    E -->|Signed Response| C
+    C & E -->|Settlement| B[Blockchain]
 ```
 
-### Format
+## 📦 Components
 
-```shell
-$ forge fmt
-```
+| Component | Description |
+|-----------|-------------|
+| `lloom-core` | Core protocol definitions, networking, and cryptographic primitives |
+| `lloom-client` | Client library for requesting LLM services |
+| `lloom-executor` | Executor node for serving LLM requests |
+| `lloom-validator` | Validator node for network coordination |
+| `faucet-server` | Test token distribution service |
 
-### Gas Snapshots
+## 🛠️ Technology Stack
 
-```shell
-$ forge snapshot
-```
+- **Rust** - Systems programming language for performance and safety
+- **libp2p** - Modular peer-to-peer networking stack
+- **Ethereum** - Identity management and on-chain settlements
+- **EIP-712** - Structured data signing standard
+- **Kademlia DHT** - Distributed hash table for peer discovery
+- **Docker** - Containerization for easy deployment
 
-### Anvil
+## 📚 Documentation
 
-```shell
-$ anvil
-```
+Comprehensive documentation is available in the `docs/` directory:
 
-### Deploy
+- [User Manual](docs/user/) - Getting started and usage guides
+- [Developer Docs](docs/dev/) - API references and development guides
+- [Architecture Overview](docs/user/src/technology/architecture.md) - System design details
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+## 🤝 Contributing
 
-### Cast
+We welcome contributions! Please see our [Contributing Guide](docs/dev/src/development/contributing.md) for details on:
+- Code style and standards
+- Development workflow
+- Testing requirements
+- Pull request process
 
-```shell
-$ cast <subcommand>
-```
+## 🔮 Roadmap
 
-### Help
+- [x] Core P2P networking implementation
+- [x] EIP-712 message signing
+- [x] Model announcement protocol
+- [x] Basic executor and client functionality
+- [ ] Enhanced smart contracts with dual signatures and payment channels
+- [ ] WebSocket support for real-time updates
+- [ ] Executors benchmarking
+- [ ] Reputation scoring
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🌟 Join the Revolution
+
+Lloom is building the future of decentralized AI services. Join our community:
+
+- 🐦 [Twitter](https://twitter.com/dexloom)
+- 💬 [Telegram](https://t.me/dexloom_com)
+- 📧 [Email](mailto:team@lloom.xyz)
+
+
+---
+
+<p align="center">
+  <i>Empowering AI through decentralization</i>
+</p>

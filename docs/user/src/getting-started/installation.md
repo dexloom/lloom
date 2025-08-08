@@ -68,7 +68,7 @@ Clone and build the Lloom project:
 
 ```bash
 # Clone the repository
-git clone https://github.com/lloom/lloom.git
+git clone https://github.com/dexloom/lloom.git
 cd lloom
 
 # Build all components
@@ -102,7 +102,7 @@ For development, install with additional features:
 
 ```bash
 # Clone with submodules
-git clone --recursive https://github.com/lloom/lloom.git
+git clone --recursive https://github.com/dexloom/lloom.git
 cd lloom
 
 # Install development dependencies
@@ -237,7 +237,7 @@ echo 'export LLOOM_CONFIG_PATH="$HOME/.lloom/config.toml"' >> ~/.bashrc
 If you encounter issues:
 
 1. Check the [Troubleshooting Guide](../user-manual/troubleshooting.md)
-2. Search existing [GitHub Issues](https://github.com/lloom/lloom/issues)
+2. Search existing [GitHub Issues](https://github.com/dexloom/lloom/issues)
 3. Join our community chat for real-time help
 
 ## Next Steps

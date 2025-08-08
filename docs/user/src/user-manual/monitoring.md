@@ -18,7 +18,7 @@ The Lloom monitoring stack includes:
 1. **Clone the monitoring stack**:
    ```bash
    cd ~/lloom
-   git clone https://github.com/lloom/monitoring-stack
+   git clone https://github.com/dexloom/monitoring-stack
    cd monitoring-stack
    ```
 

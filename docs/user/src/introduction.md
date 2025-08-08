@@ -99,7 +99,7 @@ Ready to dive in? Here are your next steps:
 
 Lloom is an open-source project welcoming contributions from developers, researchers, and users:
 
-- **GitHub**: [github.com/lloom/lloom](https://github.com/lloom/lloom)
+- **GitHub**: [github.com/dexloom/lloom](https://github.com/dexloom/lloom)
 - **Documentation**: You're reading it!
 - **Contributing**: See our [contribution guide](./development/contributing.md)
 

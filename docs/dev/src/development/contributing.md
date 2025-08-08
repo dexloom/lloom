@@ -48,7 +48,7 @@ We welcome feature suggestions! Please:
 
 3. **Add upstream remote**:
    ```bash
-   git remote add upstream https://github.com/lloom/lloom.git
+   git remote add upstream https://github.com/dexloom/lloom.git
    ```
 
 4. **Create a feature branch**:

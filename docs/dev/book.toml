@@ -12,9 +12,9 @@ description = "Developer documentation for the Lloom P2P LLM Service"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/lloom/lloom"
+git-repository-url = "https://github.com/dexloom/lloom"
 git-repository-icon = "fa-github"
-edit-url-template = "https://github.com/lloom/lloom/edit/main/docs/dev/{path}"
+edit-url-template = "https://github.com/dexloom/lloom/edit/main/docs/dev/{path}"
 site-url = "/lloom/dev/"
 mathjax-support = false
 copy-fonts = true

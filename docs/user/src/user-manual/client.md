@@ -532,7 +532,7 @@ jobs:
       
       - name: Install Lloom Client
         run: |
-          curl -L https://github.com/lloom/lloom/releases/latest/download/lloom-client-linux-amd64 -o lloom-client
+          curl -L https://github.com/dexloom/lloom/releases/latest/download/lloom-client-linux-amd64 -o lloom-client
           chmod +x lloom-client
           sudo mv lloom-client /usr/local/bin/
       
