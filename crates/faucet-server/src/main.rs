@@ -114,18 +114,19 @@ fn generate_config(path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use tempfile::tempdir;
 
     #[test]
     fn test_generate_and_load_config() -> Result<()> {
-        let temp_file = NamedTempFile::new()?;
-        let temp_path = temp_file.path().to_str().unwrap();
+        let temp_dir = tempdir()?;
+        let temp_path = temp_dir.path().join("test_config.toml");
+        let temp_path_str = temp_path.to_str().unwrap();
         
         // Generate config
-        generate_config(temp_path)?;
+        generate_config(temp_path_str)?;
         
         // Should be able to load it
-        let config = load_config(temp_path)?;
+        let config = load_config(temp_path_str)?;
         
         // Should have default values
         assert_eq!(config.http.port, 3030);
@@ -143,12 +144,13 @@ mod tests {
 
     #[test]
     fn test_config_validation() -> Result<()> {
-        let temp_file = NamedTempFile::new()?;
-        let temp_path = temp_file.path().to_str().unwrap();
+        let temp_dir = tempdir()?;
+        let temp_path = temp_dir.path().join("test_config.toml");
+        let temp_path_str = temp_path.to_str().unwrap();
         
         // Generate and load default config
-        generate_config(temp_path)?;
-        let config = load_config(temp_path)?;
+        generate_config(temp_path_str)?;
+        let config = load_config(temp_path_str)?;
         
         // Default config should fail validation (missing real credentials)
         assert!(config.validate().is_err());

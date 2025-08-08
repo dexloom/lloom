@@ -216,6 +216,7 @@ username = "test@example.com"
 password = "password123"
 from_address = "faucet@example.com"
 subject = "Test Token"
+base_url = "http://localhost:8080"
 
 [security]
 token_expiry_minutes = 30

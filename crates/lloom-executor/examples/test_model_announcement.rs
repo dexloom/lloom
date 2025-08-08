@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             avg_latency_ms: Some(180),
         });
         
-        let update_announcement = ModelAnnouncement {
+        let _update_announcement = ModelAnnouncement {
             executor_peer_id: "test-executor-001".to_string(),
             executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap(),
             models: vec![model_info],
@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     };
     
-    let new_announcement = ModelAnnouncement {
+    let _new_announcement = ModelAnnouncement {
         executor_peer_id: "test-executor-001".to_string(),
         executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap(),
         models: vec![new_model],
@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Remove all models before shutdown
     for model_name in models.keys() {
-        let removal = ModelAnnouncement {
+        let _removal = ModelAnnouncement {
             executor_peer_id: "test-executor-001".to_string(),
             executor_address: "0x742d35Cc6634C0532925a3b8D404cB8b3d3A5d3a".parse().unwrap(),
             models: vec![], // Empty for removal

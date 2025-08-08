@@ -11,7 +11,7 @@ use lloom_core::{
     network::{LloomBehaviour, LloomEvent, helpers},
     protocol::{
         ServiceRole, ModelAnnouncement, ModelDescriptor, AnnouncementType,
-        NetworkStatistics, ExecutorStatistics, SignedModelAnnouncement
+        NetworkStatistics, ExecutorStatistics
     },
 };
 use futures::StreamExt;
@@ -70,7 +70,9 @@ enum ConnectionState {
 /// Record of an executor in the registry
 #[derive(Debug, Clone)]
 struct ExecutorRecord {
+    #[allow(dead_code)]
     peer_id: PeerId,
+    #[allow(dead_code)]
     evm_address: Address,
     models: HashMap<String, ModelDescriptor>,
     connection_state: ConnectionState,

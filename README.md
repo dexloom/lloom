@@ -34,22 +34,17 @@
 
 ## 🚀 Quick Start
 
+For quick start please try our demo that connects to LLOOM network and asks
+"gpt-oss:20b" for introduction.
+
 ```bash
 # Clone the repository
 git clone https://github.com/dexloom/lloom
 cd lloom
 
-# Build the project
-cargo build --release
+cargo run -p lloom-client -- --demo
 
-# Run a local validator node
-cargo run --bin lloom-validator
 
-# In another terminal, start an executor
-cargo run --bin lloom-executor
-
-# Finally, run a client to make requests
-cargo run --bin lloom-client
 ```
 
 ## 🏗️ Architecture

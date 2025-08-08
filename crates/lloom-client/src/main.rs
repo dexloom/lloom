@@ -17,7 +17,7 @@ use lloom_core::{
 };
 use futures::StreamExt;
 use libp2p::{
-    kad::{self, QueryResult},
+    kad::{self},
     request_response::{self, OutboundRequestId},
     swarm::SwarmEvent,
     Multiaddr, PeerId, Swarm, SwarmBuilder,
@@ -286,6 +286,7 @@ async fn find_executors_for_model(
 }
 
 /// List all models with their capabilities
+#[allow(dead_code)]
 async fn list_all_models(
     swarm: &mut Swarm<LloomBehaviour>,
     identity: &Identity,
@@ -301,7 +302,6 @@ async fn send_model_query(
     query: ModelQuery,
     cache: &mut ModelDiscoveryCache,
 ) -> Result<Vec<ModelEntry>> {
-    use std::collections::HashSet;
     
     // Clear cache for fresh query
     cache.clear();
