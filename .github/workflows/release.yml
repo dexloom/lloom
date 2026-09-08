@@ -1,0 +1,154 @@
+name: Release
+
+# Publishing a GitHub Release tagged `vX.Y.Z` builds the package on a clean
+# runner, proves the tag matches what was actually built, audits the artifact,
+# and uploads it to PyPI over OIDC. No PyPI token is stored anywhere.
+#
+# A PyPI version is immutable: once uploaded it can never be replaced, only
+# yanked, and the number is burned. Every gate below exists to fail *before*
+# the upload rather than after.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to rehearse, e.g. v0.2.0 (this path never publishes)"
+        required: true
+
+# Job-level `permissions` REPLACE this set rather than merging with it, so the
+# publish job below restates `contents: read` alongside `id-token: write`.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # editing a release re-fires `published`; never interrupt an in-flight upload
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ github.event_name == 'release' }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}"
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::tag must look like v1.2.3, got: $TAG"; exit 1 ;;
+          esac
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "releasing ${TAG#v} (publish=${{ github.event_name == 'release' }})"
+
+  # Reuses the exact lint + test jobs that guard every push. A `uses:` job is a
+  # real job and gates `needs:`.
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [setup, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      # No --sdist/--wheel split on purpose. uv builds the sdist and then builds
+      # the wheel *from that sdist*, which is what proves the `only-include`
+      # allowlist is actually sufficient. Building the wheel from the source
+      # tree instead would hide a gap in it.
+      - name: Build
+        run: uv build --out-dir dist
+
+      - name: Built version matches the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          want='${{ needs.setup.outputs.version }}'
+          got=$(basename "$(ls dist/*.whl)" | cut -d- -f2)   # PEP 427 field 2
+          [ "$got" = "$want" ] || { echo "::error::built $got but the tag says $want"; exit 1; }
+          echo "version: $got"
+
+      # `lloom register` writes an api_key AND a password into a plain
+      # config.json, and `lloom` writes a maildir under .lloom/. The sdist
+      # allowlist is what keeps those out of a public upload; this verifies the
+      # allowlist still holds, across the wheel as well as the sdist.
+      - name: Credential audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s failglob      # an empty glob is a hard error, never a silent pass
+          : > listing.txt
+          for f in dist/*.tar.gz; do tar -tzf "$f"; done >> listing.txt
+          for f in dist/*.whl;    do unzip -Z1 "$f"; done >> listing.txt
+          if grep -iE 'admin\.key|\.env$|/\.env|config\.json|\.sqlite|\.pem|id_rsa' listing.txt; then
+            echo "::error::credential-shaped file in a distribution — refusing to publish"
+            exit 1
+          fi
+          echo "credential audit: clean ($(wc -l < listing.txt) entries)"
+
+      # `lloom skills install` was dead for PyPI users once, because the skills
+      # lived outside src/lloom and never reached the wheel. Counted against the
+      # source tree so adding a skill cannot leave this asserting a stale number.
+      - name: Wheel ships every bundled skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          want=$(ls -d src/lloom/skills/*/ | wc -l | tr -d ' ')
+          got=$(unzip -Z1 dist/*.whl | grep -c '^lloom/skills/.*/SKILL\.md$')
+          [ "$want" = "$got" ] || { echo "::error::wheel has $got of $want SKILL.md files"; exit 1; }
+          echo "skills: $got/$want"
+
+      # A broken `packages = [...]` or entry point ships silently. Read the
+      # metadata rather than installing.
+      - name: Console script survives
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -p dist/*.whl '*.dist-info/entry_points.txt' | grep -qx 'lloom = lloom.cli:main'
+          echo "entry point: ok"
+
+      - name: Metadata renders on PyPI
+        run: uvx --from 'twine>=6.2' twine check --strict dist/*
+
+      - name: Version is not already on PyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/lloom-client/${{ needs.setup.outputs.version }}/json")
+          [ "$code" = "404" ] || {
+            echo "::error::lloom-client ${{ needs.setup.outputs.version }} already on PyPI (HTTP $code)"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  publish:
+    needs: [setup, build]
+    if: ${{ needs.setup.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true      # makes "re-run failed jobs" safe

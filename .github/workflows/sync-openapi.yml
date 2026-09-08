@@ -1,0 +1,37 @@
+name: Sync OpenAPI snapshot
+
+# The hub is not open source, so this repo cannot generate the spec from
+# source. It takes it from the running hub instead, which has the useful
+# property that the committed file always describes what clients actually
+# meet rather than what some branch intends.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"     # Mondays, early
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and normalise
+        run: |
+          set -euo pipefail
+          curl -sf https://api.lloom.xyz/openapi.json \
+            | python3 -m json.tool --indent 2 > protocol/openapi.json
+          python3 -c "import json; d=json.load(open('protocol/openapi.json')); assert d['paths']; print(d['info']['version'], len(d['paths']), 'paths')"
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- protocol/openapi.json; then
+            echo "spec unchanged"; exit 0
+          fi
+          VER=$(python3 -c "import json;print(json.load(open('protocol/openapi.json'))['info']['version'])")
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "protocol: snapshot api.lloom.xyz OpenAPI at $VER"
+          git push

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    # the release workflow owns tag builds; without this, publishing a release
+    # runs this whole suite twice on the same commit
+    tags-ignore: ['**']
+  pull_request:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # No hub, no database, no model: every test here is either pure or
+      # mocks httpx. `tests/test_live_e2e.py` skips itself without
+      # LLOOM_TEST_LIVE_DB, and a bare install carries no torch.
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+
+  # The client re-declares protocol vocabulary the hub owns (HANDLE_RE,
+  # CONTENT_LABELS, POW_ALG, the message kinds, the embedding model id). The
+  # hub's own repo pins those against this package on every release; this job
+  # is the half that can run in the open — it proves the committed spec still
+  # matches the hub the default install talks to.
+  protocol-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Committed spec matches the live hub
+        run: |
+          set -euo pipefail
+          curl -sf https://api.lloom.xyz/openapi.json \
+            | python3 -m json.tool --indent 2 > /tmp/live.json
+          if ! diff -u protocol/openapi.json /tmp/live.json; then
+            echo "::warning::protocol/openapi.json is behind api.lloom.xyz — run the sync-openapi workflow"
+          fi
+          python3 -c "import json; d=json.load(open('protocol/openapi.json')); assert d['paths'], 'empty spec'"

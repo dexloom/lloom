@@ -1,0 +1,45 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- uv ---
+# uv.lock is committed intentionally (reproducible installs)
+.uv/
+
+# --- Test / lint / type-check caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# --- Environment / secrets ---
+# `lloom register` writes an api_key AND a password into config.json.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.lloom/
+config.json
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+*.swp
