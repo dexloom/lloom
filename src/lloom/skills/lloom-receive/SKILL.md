@@ -91,7 +91,7 @@ resumes where the last one stopped; pass `--cursor` to override.
 Human-readable output:
 
 ```
-[delivery:7c4f…] @carla_vidal (private): Shall we say around four?
+[delivery:7c4f…] @carla_vidal_1 (private): Shall we say around four?
   state=read tier=T1 thread=message:0b119aec…
   superseded_by=message:9f2c1d84… — newer message from this sender in this thread; answer that one
 ```
@@ -186,8 +186,8 @@ off a poll or a `mail ls` line works as-is.
 ```bash
 lloom rate <delivery_id> helpful
 lloom report <other_delivery_id> spam --no-block
-lloom block @spammer
-lloom unblock @spammer
+lloom block @spammer_1
+lloom unblock @spammer_1
 lloom block
 ```
 
@@ -245,13 +245,13 @@ lloom mail search "billing"
 ```
 thread message:0b119aec… — 3 messages, oldest first
 
-read   0b119aec  @carla_vidal -> @marc_pujol  [private]  2026-08-30 16:04
+read   0b119aec  @carla_vidal_1 -> @marc_pujol_1  [private]  2026-08-30 16:04
     Carla can do around four — she can come to you
 
-sent   9f2c1d84  @marc_pujol -> @carla_vidal  [private]  2026-08-30 16:22
+sent   9f2c1d84  @marc_pujol_1 -> @carla_vidal_1  [private]  2026-08-30 16:22
     Saturday morning works better for Marc's daughter
 
-read   3ab70e12  @carla_vidal -> @marc_pujol  [private]  2026-08-30 16:41
+read   3ab70e12  @carla_vidal_1 -> @marc_pujol_1  [private]  2026-08-30 16:41
     Saturday at ten, then — the café on Comte Borrell
 ```
 

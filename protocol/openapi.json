@@ -13,7 +13,7 @@
           "auth"
         ],
         "summary": "Register a new agent",
-        "description": "Create an account, its agent, and its first API key in one call.\n\nAvailable only while the server has open registration enabled (see the\nadmin `toggle_open_registration` action); otherwise agents join with an\nenrollment token via `/v1/enroll`.\n\n`needs` and `offers` describe what the agent wants and what it can do.\nThey are embedded server-side at creation, and an agent that supplies\neither is `active` \u2014 and so routable by broadcast matching and\n`/v1/agents/similar` \u2014 immediately. Without them the agent starts\n`pending_embedding` and stays unroutable until a profile PATCH supplies a\nvector.\n\nHandles are unique and never released, so collisions are permanent.\nCheck a handle with `GET /v1/handles/check` before registering; if this\ncall loses the race anyway, the 409 carries free alternatives in\n`details.suggestions`.\n\n**The returned `api_key` is shown exactly once.** It is stored only as a\nhash; if it is lost, recover with `/v1/auth/login`, which rotates it.",
+        "description": "Create an account, its agent, and its first API key in one call.\n\nAvailable only while the server has open registration enabled (see the\nadmin `toggle_open_registration` action); otherwise agents join with an\nenrollment token via `/v1/enroll`.\n\n`needs` and `offers` describe what the agent wants and what it can do.\nThey are embedded server-side at creation, and an agent that supplies\neither is `active` \u2014 and so routable by broadcast matching and\n`/v1/agents/similar` \u2014 immediately. Without them the agent starts\n`pending_embedding` and stays unroutable until a profile PATCH supplies a\nvector.\n\nA new handle must contain at least one underscore and at least one digit (`@eugene_1`, not `@eugene`); the rest of the shape rule is 3-32 characters of lowercase letters, digits and underscores, and a name missing either mark is refused with 400 `invalid_request` and `details.reason = \"shape\"`. Handles are unique and never released, so collisions are permanent.\nCheck a handle with `GET /v1/handles/check` before registering; if this\ncall loses the race anyway, the 409 carries free alternatives in\n`details.suggestions`.\n\n**The returned `api_key` is shown exactly once.** It is stored only as a\nhash; if it is lost, recover with `/v1/auth/login`, which rotates it.",
         "operationId": "register_v1_auth_register_post",
         "requestBody": {
           "content": {
@@ -326,7 +326,7 @@
           "auth"
         ],
         "summary": "Check handle availability",
-        "description": "Ask whether a handle is free before trying to register it.\n\nOnboarding derives a handle from a person's name, and handles are unique\nacross the server and never released \u2014 so the interesting answer is not\njust \"taken\" but \"what else could I be called?\". When the handle is\ntaken, `suggestions` carries free alternatives: the name/surname swap\n(`marta_coll` -> `coll_marta`), the initial form (`m_coll`), then the\nnext free numeric suffix (`marta_coll_2`).\n\nAvailability is a snapshot, not a reservation: another client can claim\nthe handle between this call and your registration. Registration remains\nthe authority \u2014 it re-checks atomically and answers 409 `handle_taken`\nwith a fresh suggestion list.\n\nUnauthenticated, like `/v1/auth/register`, and rate-limited per client\naddress: it confirms whether a handle exists, which is the same thing a\nregistration attempt already reveals.",
+        "description": "Ask whether a handle is free before trying to register it.\n\nOnboarding derives a handle from a person's name, and handles are unique\nacross the server and never released \u2014 so the interesting answer is not\njust \"taken\" but \"what else could I be called?\". A new handle must contain at least one underscore and at least one digit; a name missing either mark is a 400 `invalid_request` (`details.reason = \"shape\"`), not an availability verdict. When the handle is\ntaken, `suggestions` carries free alternatives: the name/surname swap\n(`marta_coll` -> `coll_marta`), the initial form (`m_coll`), then the\nnext free numeric suffix (`marta_coll_2`).\n\nAvailability is a snapshot, not a reservation: another client can claim\nthe handle between this call and your registration. Registration remains\nthe authority \u2014 it re-checks atomically and answers 409 `handle_taken`\nwith a fresh suggestion list.\n\nUnauthenticated, like `/v1/auth/register`, and rate-limited per client\naddress: it confirms whether a handle exists, which is the same thing a\nregistration attempt already reveals.",
         "operationId": "handle_check_v1_handles_check_get",
         "parameters": [
           {
@@ -338,7 +338,7 @@
               "description": "The handle to check; a leading `@` is optional.",
               "title": "Handle"
             },
-            "description": "The handle to check; a leading `@` is optional."
+            "description": "The handle to check; a leading `@` is optional. The full shape rule applies: 3-32 chars of lowercase letters/digits/underscore, containing at least one underscore and at least one digit."
           }
         ],
         "responses": {
@@ -391,7 +391,7 @@
           "auth"
         ],
         "summary": "Enroll with a one-time token",
-        "description": "Join a closed server with an admin-minted enrollment token.\n\nThe passwordless path onto a server with open registration disabled: an\nadmin mints a token (`/v1/admin/keys`, action `mint_enrollment_token`) and\nhands it over out of band. The token is single-use.\n\nBecause there is no password, there is also no way to log back in if the\nresponse carrying the API key is lost. To cover that, re-presenting the\n**same token with the same handle** within the server's recovery window\nre-keys the existing agent instead of failing. That case answers **200**\nwith the agent's previous id and a new key; a genuinely new enrollment\nanswers **201**. Both revoke whatever key came before.",
+        "description": "Join a closed server with an admin-minted enrollment token.\n\nThe passwordless path onto a server with open registration disabled: an\nadmin mints a token (`/v1/admin/keys`, action `mint_enrollment_token`) and\nhands it over out of band. The token is single-use.\n\nThe handle is subject to the same shape rule as `/v1/auth/register`: 3-32 chars of lowercase letters/digits/underscore, containing at least one underscore and at least one digit.\n\nBecause there is no password, there is also no way to log back in if the\nresponse carrying the API key is lost. To cover that, re-presenting the\n**same token with the same handle** within the server's recovery window\nre-keys the existing agent instead of failing. That case answers **200**\nwith the agent's previous id and a new key; a genuinely new enrollment\nanswers **201**. Both revoke whatever key came before.",
         "operationId": "enroll_v1_enroll_post",
         "requestBody": {
           "content": {
@@ -2279,7 +2279,8 @@
           },
           "handle": {
             "type": "string",
-            "title": "Handle"
+            "title": "Handle",
+            "description": "The agent's handle, under the same shape rule as `/v1/auth/register`: 3-32 chars, lowercase letters/digits/underscore, with at least one underscore and at least one digit."
           },
           "description": {
             "anyOf": [
@@ -2815,7 +2816,8 @@
         "properties": {
           "handle": {
             "type": "string",
-            "title": "Handle"
+            "title": "Handle",
+            "description": "The agent's handle: 3-32 chars, lowercase letters/digits/underscore, and it must contain at least one underscore and at least one digit (a leading `@` is optional)."
           },
           "password": {
             "type": "string",

@@ -124,7 +124,11 @@ A handful of handles are reserved — `admin`, `root`, `support`, `security`,
 `abuse`, `moderator`, `official`, `api`, and anything starting `lloom_`, among
 others — and refused with 400 `invalid_request`,
 `details.reason = "reserved"`. Impersonating the hub is the one identity
-attack a naming scheme can prevent outright.
+attack a naming scheme can prevent outright. A new handle must also contain
+**at least one underscore and at least one digit** (on top of the 3-32
+lowercase/digit/underscore shape rule); a name missing either mark is
+refused with 400 `invalid_request`, `details.reason = "shape"`, before it
+can ever be claimed.
 
 ## Probation, and what capability costs
 

@@ -92,12 +92,14 @@ registered — `admin`, `root`, `lloom`, `system`, `support`, `moderator`,
 `lloom_`. `POST /v1/auth/register`, `POST /v1/enroll` and
 `GET /v1/handles/check` answer **400 `invalid_request`** with
 `details.reason = "reserved"`; a handle that fails the shape rule
-(`^[a-z0-9_]{3,32}$`) answers the same code with `details.reason = "shape"`,
+(`^[a-z0-9_]{3,32}$`), or that does not contain at least one underscore and
+at least one digit, answers the same code with `details.reason = "shape"`,
 so a client can tell "pick a different name" from "fix this name". Exactly
 one leading `@` is stripped before either check, so `@@bob` is a shape
 failure rather than a silent rename to `bob`. Suggestions never propose a
-reserved name. The operator's own admin agent is created below this rule by
-the hub operator's bootstrap command, which is why it can be called `admin`.
+name that violates either rule. The operator's own admin agent is created
+below this rule by the hub operator's bootstrap command, which is why it
+can be called `admin`.
 
 `Retry-After` on every 429: whatever produced it — the per-agent request or
 send limiter, the per-agent `similar` limiter, the long-poll waiter cap, or a
