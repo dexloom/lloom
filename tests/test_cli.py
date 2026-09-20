@@ -1415,9 +1415,36 @@ def test_password_auto_generates_locally_and_never_prints_it(fx, capsys):
     assert "registered @newbie" in out.out
     assert str(fx) in out.out and "password" in out.out
 
+    # the password lives in its OWN 0600 file, not in config.json — a catted
+    # config leaks at most a revocable key, never the account password
+    creds = fx.parent / (fx.name + ".credentials")
+    assert creds.read_text() == password
     saved = json.loads(fx.read_text())
-    assert saved["password"] == password
+    assert "password" not in saved
     assert saved["api_key"] == "llm_new"
+
+
+def test_generated_credentials_file_is_private(fx):
+    import stat
+
+    cli.main(["--config", str(fx), "register", "@newbie", "--password-auto"])
+    creds = fx.parent / (fx.name + ".credentials")
+    assert stat.S_IMODE(creds.stat().st_mode) == 0o600
+
+
+def test_legacy_config_password_migrates_to_credentials_file(fx):
+    """An old install carries `password` inside config.json; the first read
+    moves it out to the credentials file and scrubs the config."""
+    data = json.loads(fx.read_text())
+    data["password"] = "legacy-secret"
+    fx.write_text(json.dumps(data))
+
+    cli.main(["--config", str(fx), "config", "show"])
+
+    creds = fx.parent / (fx.name + ".credentials")
+    assert creds.read_text() == "legacy-secret"
+    assert "legacy-secret" not in fx.read_text()
+    assert "password" not in json.loads(fx.read_text())
 
 
 def test_password_auto_writes_a_private_config_file(fx):
@@ -1472,7 +1499,112 @@ def test_config_show_redacts_the_stored_password(fx, capsys):
     cli.main(["--config", str(fx), "config", "show"])
     out = capsys.readouterr().out
     assert generated not in out
-    assert '"password": "****"' in out
+    assert '"password": "****' in out
+    assert ".credentials)" in out  # says where it lives, never the value
+
+
+# -- setup: the one-command objection-free onboarding -------------------------
+
+
+def _fresh_config(fx):
+    """A config path with no existing identity (the fx fixture pre-seeds one)."""
+    return fx.parent / "fresh.json"
+
+
+def test_setup_registers_publishes_and_summarizes(fx, capsys):
+    fx_fresh = _fresh_config(fx)
+    FakeClient.state["check_handle_result"] = {"handle": "new_agent_1", "available": True, "suggestions": []}
+
+    cli.main(
+        [
+            "--config", str(fx_fresh),
+            "setup", "@new_agent_1",
+            "--description", "personal assistant: research and errands",
+            "--needs", "research help",
+            "--offers", "coding help",
+        ]
+    )
+
+    # one register call carrying the whole card; password auto-generated
+    call = FakeClient.state["register"]
+    assert call["handle"] == "@new_agent_1"
+    assert call["needs"] == "research help"
+    assert call["offers"] == "coding help"
+    assert len(call["password"]) >= 16
+    password = call["password"]
+
+    out = capsys.readouterr()
+    assert "setup complete — @new_agent_1" in out.out
+    assert password not in out.out and password not in out.err
+    assert "never printed" in out.out
+    assert str(fx_fresh) in out.out  # the settings file is named, not dumped
+    assert ".credentials" in out.out  # where the human finds their password
+
+    creds = fx_fresh.parent / (fx_fresh.name + ".credentials")
+    assert creds.read_text() == password
+    assert "password" not in json.loads(fx_fresh.read_text())
+
+
+def test_setup_reports_pending_embedding_without_a_card(fx, capsys):
+    fx_fresh = _fresh_config(fx)
+    FakeClient.state["check_handle_result"] = {"handle": "new_agent_1", "available": True, "suggestions": []}
+    FakeClient.state["whoami_result"] = {"agent_id": "agent:2", "handle": "@new_agent_1", "status": "pending_embedding"}
+
+    cli.main(["--config", str(fx_fresh), "setup", "@new_agent_1"])
+    out = capsys.readouterr()
+    assert "pending_embedding" in out.out
+    assert "lloom update --needs" in out.out
+
+
+def test_setup_refuses_to_clobber_an_existing_identity(fx):
+    # the fx fixture's config already has handle + api_key
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["--config", str(fx), "setup", "@another_1"])
+    assert ei.value.code == 2
+    assert "register" not in FakeClient.state
+
+
+def test_setup_surfaces_taken_handles_before_creating_anything(fx, capsys):
+    fx_fresh = _fresh_config(fx)
+    FakeClient.state["check_handle_result"] = {
+        "handle": "new_agent_1",
+        "available": False,
+        "suggestions": ["new_agent_2", "agent_new_1"],
+    }
+
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["--config", str(fx_fresh), "setup", "@new_agent_1"])
+    assert ei.value.code == 1
+    err = capsys.readouterr().err
+    assert "free alternatives: @new_agent_2, @agent_new_1" in err
+    assert "register" not in FakeClient.state  # nothing was created
+    assert not (fx_fresh.parent / (fx_fresh.name + ".credentials")).exists()
+
+
+# -- status: secret-free local introspection ----------------------------------
+
+
+def test_status_names_paths_and_never_secrets(fx, capsys):
+    cli.main(["--config", str(fx), "register", "@newbie", "--password-auto"])
+    password = FakeClient.state["register"]["password"]
+    capsys.readouterr()
+
+    cli.main(["--config", str(fx), "status"])
+    out = capsys.readouterr().out
+    assert str(fx) in out
+    assert "@newbie" in out
+    assert "never printed" in out
+    assert ".credentials" in out
+    assert password not in out
+    assert "llm_new" not in out  # the api key value never appears either
+
+
+def test_status_on_an_unconfigured_machine(fx, capsys):
+    fx_fresh = _fresh_config(fx)
+    cli.main(["--config", str(fx_fresh), "status"])
+    out = capsys.readouterr().out
+    assert "none" in out  # no key yet
+    assert "lloom setup" in out  # and the way forward is named
 
 
 def test_stored_password_is_not_sent_to_a_different_handle(fx):

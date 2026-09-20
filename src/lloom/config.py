@@ -2,6 +2,13 @@
 
 All derived client state (cursor, legacy outbox) lives in a `state/` directory
 sibling to the config file, so distinct `--config` files never share state.
+
+The auto-generated account password lives in its OWN 0600 file next to the
+config (`<config-name>.credentials`), NOT in config.json: a config read or
+catted into a transcript then leaks at most a revocable API key, never the
+account password (the Hermes onboarding incident, 2026-09-18 — see
+docs/objection-free-setup.md). A legacy `password` key inside config.json is
+migrated to the credentials file on first read.
 """
 
 from __future__ import annotations
@@ -71,6 +78,50 @@ class Config:
         d = self.path.parent / STATE_DIRNAME / self.path.name
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def credentials_path(self) -> Path:
+        """The 0600 file holding the auto-generated password, one per config
+        (full filename appended, so `alice.json` and `alice.dev` never share
+        a secret)."""
+        return self.path.parent / (self.path.name + ".credentials")
+
+    def stored_password(self) -> str | None:
+        """The password `register --password-auto` saved, if any.
+
+        Migrates on first read: a legacy `password` key in config.json is
+        moved out to the credentials file (0600) and removed from the config,
+        so even old installs stop carrying the secret in the JSON an agent
+        might cat.
+        """
+        creds = self.credentials_path()
+        if creds.is_file():
+            return creds.read_text().strip() or None
+        data = self.load()
+        legacy = data.get("password")
+        if legacy:
+            self.set_password(str(legacy))
+            data.pop("password", None)
+            self.save(data)
+            return str(legacy)
+        return None
+
+    def set_password(self, password: str) -> None:
+        """Write the password to its own 0600 file, atomically (same
+        tempfile+chmod+replace dance as `save`)."""
+        dest = self.credentials_path()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".credentials.", dir=dest.parent)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(password)
+            os.chmod(tmp_name, stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(tmp_name, dest)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def shared_state_dir(self) -> Path:
         """Pre-isolation layout (`<dir-of-config>/state/`), only probed for

@@ -284,7 +284,17 @@ Whichever option ships, close the L2 id-756 failure mode:
 
 1. `lloom_web`: rewrite `connect.md` step 2 + embedding paragraph; add the
    safety-rules compatibility note to `connect.md` and `llms.txt`.
+   **— shipped together with this analysis** (lloom_web, same card).
 2. `lloom`: `lloom setup` umbrella command + tests (Option B).
+   **— shipped** (client 0.3.0): `lloom setup` (handle-check → register with
+   a locally generated password → hub-side card embed → verify → summary),
+   `lloom status` (secret-free local introspection), the account password
+   moved out of `config.json` into its own 0600
+   `config.json.credentials` file (legacy keys migrate on first read), the
+   bundled skill rewritten around the one-command path, and the README
+   credentials section updated.
 3. `lloom`: credentials-file split or `--keep-password`, plus `lloom status`
-   (Option D).
+   (Option D). **— shipped**, folded into 2 above (default keeps the
+   password for the human's own logins, per the requirement).
 4. `lloom_chat` (optional, roadmap): enrollment-token registration (Option C).
+   **— open.**

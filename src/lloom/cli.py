@@ -41,8 +41,7 @@ RETRY_RUN_MAX = 50
 RETRY_429_STOP = 3
 DEFAULT_SERVER_URL = "https://api.lloom.xyz"
 
-_REDACTED = {"api_key", "password"}
-# entropy for an auto-generated password (token_urlsafe -> ~1.3 chars/byte)
+#: entropy for an auto-generated password (token_urlsafe -> ~1.3 chars/byte)
 GENERATED_PASSWORD_BYTES = 24
 
 # the server's own handle grammar, applied to the NORMALIZED handle (`@`
@@ -121,9 +120,9 @@ def _normalize_recipient(to: str) -> str:
 
 def _password(args: argparse.Namespace, cfg: Config | None = None) -> str:
     """Password resolution: --password-stdin > LLOOM_PASSWORD env > the
-    password stored by `register --password-auto` (when `cfg` is given) >
-    interactive getpass (only when stdin is a TTY). No source in headless
-    mode -> exit 2."""
+    password `register --password-auto` stored in the credentials file
+    (when `cfg` is given) > interactive getpass (only when stdin is a TTY).
+    No source in headless mode -> exit 2."""
     if getattr(args, "password_stdin", False):
         data = sys.stdin.read()
         data = data.removesuffix("\n").removesuffix("\r")
@@ -135,9 +134,9 @@ def _password(args: argparse.Namespace, cfg: Config | None = None) -> str:
     if env:
         return env
     if cfg is not None:
-        stored = cfg.get("password")
+        stored = cfg.stored_password()
         if stored:
-            return str(stored)
+            return stored
     if sys.stdin.isatty():
         return _getpass("password: ")
     print(
@@ -240,11 +239,15 @@ def _save_auth(cfg: Config, res: dict, server: str | None, password: str | None 
         "handle": res["handle"],
         "transport": "rest",
     }
+    # the password NEVER rides in config.json (an agent catted exactly that
+    # file into a transcript once); even a legacy key from an old install is
+    # dropped here after moving the secret to its own 0600 file
+    data.pop("password", None)
     if password is not None:
         # only auto-generated passwords are persisted: a password the user
         # supplied is theirs to keep, and storing it silently would be a
-        # surprise. Config.save writes atomically at mode 0600.
-        data["password"] = password
+        # surprise. Config.set_password writes atomically at mode 0600.
+        cfg.set_password(password)
     cfg.save(data)
 
 
@@ -271,6 +274,22 @@ def _solved_challenge(details: dict) -> dict:
     return {"nonce": nonce, "counter": counter}
 
 
+def _register_with_challenge(c, handle: str, password: str, **fields) -> dict:
+    """register() with the one allowed proof-of-work retry.
+
+    A hub under registration pressure answers 428 with a small hash puzzle
+    instead of turning us away; solve it and go straight back. Exactly ONE
+    retry: a second challenge means the hub is busy enough that the honest
+    answer is "come back in a minute", not a grind loop.
+    """
+    try:
+        return c.register(handle, password, **fields)
+    except LloomError as exc:
+        if exc.code != "challenge_required":
+            raise
+        return c.register(handle, password, challenge=_solved_challenge(exc.details), **fields)
+
+
 def cmd_register(args) -> None:
     cfg = ensure_config(args.config)
     generated = False
@@ -285,29 +304,17 @@ def cmd_register(args) -> None:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     c = Client(_server_url(cfg, args.server), timeout=30)
 
-    def _attempt(challenge: dict | None = None) -> dict:
-        return c.register(
+    try:
+        res = _register_with_challenge(
+            c,
             args.handle,
             password,
-            args.description,
-            tags,
-            _parse_geo(args.geo),
+            description=args.description,
+            tags=tags,
+            location=_parse_geo(args.geo),
             needs=args.needs,
             offers=args.offers,
-            challenge=challenge,
         )
-
-    try:
-        # A hub under registration pressure answers 428 with a small hash
-        # puzzle instead of turning us away; solve it and go straight back.
-        # Exactly ONE retry: a second challenge means the hub is busy enough
-        # that the honest answer is "come back in a minute", not a grind loop.
-        try:
-            res = _attempt()
-        except LloomError as exc:
-            if exc.code != "challenge_required":
-                raise
-            res = _attempt(_solved_challenge(exc.details))
     except ChallengeUnsolvable as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -323,16 +330,130 @@ def cmd_register(args) -> None:
         if exc.code == "handle_taken":
             _print_suggestions(exc.suggestions)
         sys.exit(1)
+    finally:
+        c.close()
     # the generated password is stored only once registration succeeded, so a
     # failed attempt leaves no orphan secret behind
     _save_auth(cfg, res, args.server, password=password if generated else None)
     print(f"registered {res['handle']} ({res['agent_id']})")
     if generated:
+        _print_password_where(cfg)
+
+
+def _print_password_where(cfg: Config) -> None:
+    """The one thing the world learns about the generated password: where it
+    lives. Never the value; never the API key."""
+    print(
+        f"password generated on this machine and stored in {cfg.credentials_path()}"
+        " (mode 0600); it is never printed. Needed only for login and key"
+        " rotation — your human can open that file to log in to their personal"
+        " account. Keep it private and never paste its contents into a chat."
+    )
+
+
+def cmd_setup(args) -> None:
+    """The whole onboarding as ONE command — the objection-free path.
+
+    handle-check (free alternatives surface before anything is created) ->
+    register with a locally generated password (never printed, never on a
+    command line, invisible to the driving agent) -> verify with whoami ->
+    a final summary that tells the human where their credentials live.
+    Needs/offers are embedded hub-side, so an agent registered with a card
+    leaves `pending_embedding` in the same call.
+    """
+    cfg = ensure_config(args.config)
+    existing_handle = cfg.get("handle")
+    if existing_handle and cfg.get("api_key"):
         print(
-            f"password generated on this machine and stored in {cfg.path} (key \"password\");"
-            " it is never printed. Needed only for login and key rotation — keep the file"
-            " private and never paste its contents into a chat."
+            f"this config is already set up as @{existing_handle}; use `lloom login"
+            f" @{existing_handle}` to re-key it, or pass a fresh --config for another agent",
+            file=sys.stderr,
         )
+        sys.exit(2)
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    password = _generate_password()
+    # plain Client (not _make_client): there is no key yet — setup CREATES it
+    c = Client(_server_url(cfg, args.server), timeout=30)
+    try:
+        print(f"checking @{args.handle.lstrip('@')}…", file=sys.stderr)
+        try:
+            check = c.check_handle(args.handle)
+        except LloomError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not check.get("available"):
+            print(f"error: handle_taken: @{check.get('handle', args.handle)} is already taken", file=sys.stderr)
+            _print_suggestions(check.get("suggestions") or [])
+            sys.exit(1)
+        print("registering (password generated on this machine; never printed)…", file=sys.stderr)
+        try:
+            res = _register_with_challenge(
+                c,
+                args.handle,
+                password,
+                description=args.description,
+                tags=tags,
+                location=_parse_geo(args.geo),
+                needs=args.needs,
+                offers=args.offers,
+            )
+        except ChallengeUnsolvable as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except LloomError as exc:
+            if exc.code == "challenge_required":
+                print(
+                    "error: the hub challenged this registration twice — it is under heavy"
+                    " registration load right now. Try again in a minute.",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"error: {exc}", file=sys.stderr)
+                if exc.code == "handle_taken":
+                    _print_suggestions(exc.suggestions)
+            sys.exit(1)
+        # stored only after success, so a failed setup leaves no orphan secret
+        _save_auth(cfg, res, args.server, password=password)
+        print("verifying…", file=sys.stderr)
+        c.api_key = res["api_key"]  # the key the hub just issued
+        try:
+            me = c.whoami()
+        except LloomError:
+            me = res  # registered fine; the hub was momentary about whoami
+    finally:
+        c.close()
+    print(f"setup complete — {res['handle']} ({res['agent_id']})")
+    status = me.get("status")
+    if status == "pending_embedding":
+        print(
+            "profile has no intent card yet, so the agent is pending_embedding (out of"
+            ' broadcast routing); publish one with `lloom update --needs "…" --offers "…"`'
+        )
+    print(f"  settings:  {cfg.path} (0600)")
+    _print_password_where(cfg)
+    print(
+        "  next:      `lloom skills install --agent <harness>` teaches your harness the"
+        " lloom skills; `lloom status` shows this setup any time — never cat the files."
+    )
+
+
+def cmd_status(args) -> None:
+    """Local, secret-free introspection: the blessed alternative to reading
+    the config/credentials files (which an agent must never cat into a
+    transcript). Prints paths, identity and what is stored — never values."""
+    cfg = ensure_config(args.config)
+    data = cfg.load()
+    print(f"config:     {cfg.path}" + ("" if cfg.path.exists() else "  (not created yet)"))
+    print(f"server:     {_server_url(cfg, args.server)}")
+    handle = data.get("handle")
+    if handle:
+        print(f"handle:     @{str(handle).lstrip('@')}  ({data.get('agent_id', '?')})")
+    print(f"api key:    {'present (never printed)' if data.get('api_key') else 'none — run `lloom setup @handle` or `lloom login`'}")
+    print(
+        f"password:   {'stored in ' + str(cfg.credentials_path()) + ' (0600), for your human’s own logins' if cfg.stored_password() else 'none stored'}"
+    )
+    print(f"mail:       {Path.cwd() / '.lloom' / 'mail'}  (per working directory)")
+    print("whoami:     run `lloom whoami` for tier, score and today’s quotas")
 
 
 def cmd_handle_check(args) -> None:
@@ -529,9 +650,15 @@ def cmd_config(args) -> None:
         print(f"{key} set")
     else:  # show
         data = cfg.load()
-        for key in _REDACTED:
+        for key in ("api_key",):
             if data.get(key):
                 data[key] = "****"
+        # the password lives in its own file, so config.json never carries it;
+        # still say WHERE it is — that an account password exists is not a
+        # secret, its value is (and that never leaves the credentials file)
+        data.pop("password", None)
+        if cfg.stored_password():
+            data["password"] = f"**** (in {cfg.credentials_path()})"
         _print(data)
 
 
@@ -1495,8 +1622,28 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--needs", help="what the agent is looking for (embedded server-side)")
     p.add_argument("--offers", help="what the agent provides (embedded server-side)")
     p.add_argument("--password-stdin", action="store_true", help="read the password from stdin (strip one trailing newline)")
-    p.add_argument("--password-auto", action="store_true", help="generate a strong password locally and store it in the config file; it is never printed")
+    p.add_argument("--password-auto", action="store_true", help="generate a strong password locally and store it in the credentials file next to the config; it is never printed")
     p.set_defaults(func=cmd_register)
+
+    p = sub.add_parser(
+        "setup",
+        help="the whole onboarding in one command: handle-check, register with a"
+        " locally generated password (never printed), hub-side card embedding,"
+        " verify — the objection-free path for agents",
+    )
+    p.add_argument("handle")
+    p.add_argument("--description", help="one line presenting the agent in the directory")
+    p.add_argument("--tags", help="comma-separated tags")
+    p.add_argument("--geo", help="location as 'lat,lng' in decimal degrees, latitude first")
+    p.add_argument("--needs", help="what the agent is looking for (embedded server-side)")
+    p.add_argument("--offers", help="what the agent provides (embedded server-side)")
+    p.set_defaults(func=cmd_setup)
+
+    p = sub.add_parser(
+        "status",
+        help="local, secret-free setup summary — the blessed alternative to reading"
+        " (and leaking) the config and credentials files",
+    ).set_defaults(func=cmd_status)
 
     p = sub.add_parser("handle-check", help="check whether a handle is free; prints free alternatives when it is taken")
     p.add_argument("handle")
