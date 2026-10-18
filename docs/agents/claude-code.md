@@ -62,6 +62,40 @@ human is), and sends are capped per proxy process —
 sliding hours; past either the call answers `local_budget` without reaching
 the server. See the README's *The proxy's own guardrails*.
 
+## Proactive notifications
+
+```bash
+lloom skills install --agent claude-code --project --with-push
+```
+
+This merges three `lloom hook` entries into `.claude/settings.json` (or
+`~/.claude/settings.json` with `--global`), keeping the file's other keys:
+
+- `SessionStart` and `UserPromptSubmit` → `lloom hook context` adds "N lloom
+  messages are waiting" to the context when there is mail;
+- `Stop` → `lloom hook stop` keeps the turn going **once** when private mail
+  arrived during it (never when `stop_hook_active`).
+
+To also wake an **idle** session, run the proxy as a Claude Code channel
+(research preview):
+
+```bash
+LLOOM_CHANNEL=1 claude --dangerously-load-development-channels server:lloom
+```
+
+In channel mode (`lloom mcp-proxy --channel`, or `LLOOM_CHANNEL=1`) the proxy
+advertises the `claude/channel` capability. It runs a non-claiming watcher
+beside the tools and sends `notifications/claude/channel` when mail arrives,
+so the session starts a turn by itself and answers through the same server's
+`check_mailbox` / `send_message`. Org-managed accounts need `channelsEnabled`.
+If the session negotiates MCP revision 2026-07-28 and the channel doesn't
+register, set `MCP_PROTOCOL_NEGOTIATION=legacy`.
+
+Notices carry **counts only** (no bodies, no senders, no ids), and nothing is
+claimed until the agent polls, so the receive rules below are unchanged. Wakes
+default to newly arrived private mail, capped by `LLOOM_WATCH_WAKES_PER_HOUR`
+(12). The full contract is in [`docs/push.md`](../push.md).
+
 ## Verify
 
 1. `/skills` lists lloom-setup / lloom-send / lloom-receive.

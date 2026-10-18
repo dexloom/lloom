@@ -27,6 +27,11 @@ stays repo-only and is not bundled at all:
   copy — the cross-tool standard — so skills remain discoverable by tools
   that read that directory regardless of which agent you installed for.
 
+`--with-push` wires proactive "mail is waiting" notices (see watch.py): the
+Pi extension or OpenCode plugin file, or the `lloom hook` entries in Claude
+Code's settings.json / Codex's hooks.json (JSON-merged, existing keys kept),
+plus printed next steps. Same OK/SKIP/MERGE rules as everything else.
+
 `--with-mcp` prints/applies the agent's MCP registration. Non-destructive:
 in a project it may only touch `.agents/skills/`, `.claude/skills/` and the
 project-root `.mcp.json`; outside a project the only automated write beyond
@@ -181,6 +186,7 @@ class Action:
     dest: Path
     detail: str = ""
     apply: Callable[[], None] | None = None
+    snippet: str | None = None  # a PRINT's own text; None = the agent's MCP snippet
 
     def line(self) -> str:
         text = f"{self.verb:<7} {self.dest}"
@@ -295,6 +301,133 @@ def _opencode_merge_action(home: Path) -> Action:
     return Action("MERGE", dest, "add mcp.lloom, preserving existing keys", apply)
 
 
+# -- push notifications (--with-push) ------------------------------------------------
+
+#: The hook commands lloom wires into Claude Code and Codex, per hook event.
+#: Both harnesses read the same `{"hooks": {Event: [{"hooks": [{type,
+#: command}]}]}}` shape.
+PUSH_HOOKS: dict[str, str] = {
+    "SessionStart": "lloom hook context",
+    "UserPromptSubmit": "lloom hook context",
+    "Stop": "lloom hook stop",
+}
+
+CLAUDE_CHANNEL_NOTE = """\
+Hooks announce waiting mail at session start, on each prompt, and at the end of
+a turn (Stop keeps the turn going once when private mail arrived). To also
+wake an IDLE session, run the proxy as a channel (research preview):
+
+  LLOOM_CHANNEL=1 claude --dangerously-load-development-channels server:lloom
+
+(LLOOM_CHANNEL=1 reaches the proxy through Claude Code's environment; the
+alternative is registering `lloom mcp-proxy --channel` as the server.)
+
+Notices carry counts only; nothing is claimed until the agent polls."""
+
+CODEX_TRUST_NOTE = """\
+Codex runs only hooks you have trusted: open /hooks once in Codex and trust
+the three `lloom hook` entries. Codex hooks fire at turn boundaries (session
+start, each prompt, the end of a turn); they cannot wake an idle session.
+Notices carry counts only; nothing is claimed until the agent polls."""
+
+NO_PUSH_NOTE = "{agent}: no push adapter yet; `lloom poll --wait 30` remains the way to wait for mail."
+
+
+def bundled_integration(agent: str, name: str) -> Path:
+    return Path(str(importlib.resources.files("lloom") / "integrations" / agent / name))
+
+
+def _file_copy_action(src: Path, dst: Path, note: str = "") -> Action:
+    if dst.is_file():
+        if dst.read_bytes() == src.read_bytes():
+            return Action("OK", dst, "identical copy" + (f", {note}" if note else ""))
+        return Action("SKIP", dst, "MISMATCH: exists and differs; not overwriting — delete it to re-install")
+    if dst.exists():
+        return Action("SKIP", dst, "MISMATCH: exists and is not a file; not overwriting")
+
+    def apply() -> None:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+
+    return Action("CREATE", dst, f"copy of {src.name}" + (f", {note}" if note else ""), apply)
+
+
+def _has_hook_command(entries: object, command: str) -> bool:
+    if not isinstance(entries, list):
+        return False
+    for group in entries:
+        hooks = group.get("hooks") if isinstance(group, dict) else None
+        for hook in hooks if isinstance(hooks, list) else []:
+            if isinstance(hook, dict) and hook.get("command") == command:
+                return True
+    return False
+
+
+def _hooks_merge_action(dest: Path, wanted: dict[str, str] = PUSH_HOOKS) -> Action:
+    """JSON-merge `lloom hook` commands into a settings/hooks file, appending
+    a group per missing event and touching nothing else. OK when every
+    command is already wired, in any group."""
+    existing: dict = {}
+    if dest.is_file():
+        try:
+            existing = json.loads(dest.read_text())
+        except ValueError:
+            return Action("SKIP", dest, "MISMATCH: not valid JSON; not touching it")
+        if not isinstance(existing, dict) or not isinstance(existing.get("hooks", {}), dict):
+            return Action("SKIP", dest, "MISMATCH: unexpected shape; not touching it")
+    hooks = existing.get("hooks", {})
+    missing = {ev: cmd for ev, cmd in wanted.items() if not _has_hook_command(hooks.get(ev), cmd)}
+    if not missing:
+        return Action("OK", dest, "lloom hooks already wired")
+
+    def apply() -> None:
+        merged = dict(existing)
+        merged_hooks = dict(merged.get("hooks", {}))
+        for ev, cmd in missing.items():
+            groups = list(merged_hooks.get(ev) or [])
+            groups.append({"hooks": [{"type": "command", "command": cmd}]})
+            merged_hooks[ev] = groups
+        merged["hooks"] = merged_hooks
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".tmp")
+        tmp.write_text(json.dumps(merged, indent=2) + "\n")
+        os.replace(tmp, dest)
+
+    verb = "MERGE" if dest.is_file() else "CREATE"
+    return Action(verb, dest, "add " + ", ".join(sorted(missing)) + " lloom hooks, preserving existing keys", apply)
+
+
+def _push_actions(agent: str, scope: str, project_root: Path, home: Path) -> list[Action]:
+    """--with-push: wire the proactive-notification adapter for one agent."""
+    project = scope == "project"
+    if agent == "pi":
+        base = project_root / ".pi" if project else home / ".pi" / "agent"
+        return [_file_copy_action(bundled_integration("pi", "lloom.ts"), base / "extensions" / "lloom.ts",
+                                  note="pi extension: runs `lloom watch`")]
+    if agent == "opencode":
+        base = project_root / ".opencode" if project else _opencode_config_dir(home)
+        return [_file_copy_action(bundled_integration("opencode", "lloom.ts"), base / "plugins" / "lloom.ts",
+                                  note="opencode plugin: runs `lloom watch`")]
+    if agent == "claude-code":
+        base = project_root / ".claude" if project else home / ".claude"
+        return [
+            _hooks_merge_action(base / "settings.json"),
+            Action("PRINT", Path("claude --dangerously-load-development-channels server:lloom"),
+                   "optional: wake an idle session", snippet=CLAUDE_CHANNEL_NOTE),
+        ]
+    if agent == "codex":
+        if project:
+            dest = project_root / ".codex" / "hooks.json"
+        else:
+            env = os.environ.get("CODEX_HOME")
+            dest = (Path(env).expanduser() if env else home / ".codex") / "hooks.json"
+        return [
+            _hooks_merge_action(dest),
+            Action("PRINT", Path("/hooks"), "trust the hooks once inside Codex", snippet=CODEX_TRUST_NOTE),
+        ]
+    return [Action("PRINT", Path(agent), "push not supported", snippet=NO_PUSH_NOTE.format(agent=agent))]
+
+
 def _snippet_for(repo_root: Path | None, agent: str) -> str:
     """Prefer the paste-ready snippet from docs/agents/<agent>.md (single source
     of truth); fall back to the embedded copy."""
@@ -335,7 +468,9 @@ def _extract_mcp_snippet(doc: str) -> str | None:
 # -- install -----------------------------------------------------------------------
 
 
-def _agent_actions(agent: str, scope: str, project_root: Path, home: Path, with_mcp: bool) -> list[Action]:
+def _agent_actions(
+    agent: str, scope: str, project_root: Path, home: Path, with_mcp: bool, with_push: bool = False
+) -> list[Action]:
     skills_root = bundled_skills_dir()               # source: always the bundled copy
     project_skills = project_root / PROJECT_SKILLS_SUBDIR
     shared_root = home / ".agents" / "skills"
@@ -407,10 +542,12 @@ def _agent_actions(agent: str, scope: str, project_root: Path, home: Path, with_
                 "openclaw": "~/.openclaw/openclaw.json (mcp.servers)",
             }[agent]
             actions.append(Action("PRINT", Path(dest), "paste-ready snippet below", None))
+    if with_push:
+        actions.extend(_push_actions(agent, scope, project_root, home))
     return actions
 
 
-def run_install(agent: str, scope: str, with_mcp: bool, dry_run: bool) -> int:
+def run_install(agent: str, scope: str, with_mcp: bool, dry_run: bool, with_push: bool = False) -> int:
     """Plan + (unless dry-run) apply the install. Returns a process exit code."""
     home = Path.home()
     targets = list(AGENTS) if agent == "all" else [agent]
@@ -440,10 +577,10 @@ def run_install(agent: str, scope: str, with_mcp: bool, dry_run: bool) -> int:
     exit_code = 0
     for target in targets:
         print(f"\n{target} ({scope}):")
-        for action in _agent_actions(target, scope, project_root, home, with_mcp):
+        for action in _agent_actions(target, scope, project_root, home, with_mcp, with_push):
             print(f"  {action.line()}")
             if action.verb == "PRINT":
-                snippet = _snippet_for(project_root, target)
+                snippet = action.snippet if action.snippet is not None else _snippet_for(project_root, target)
                 for line in snippet.splitlines():
                     print(f"      {line}")
             if not dry_run and action.apply is not None:

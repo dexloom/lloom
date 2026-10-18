@@ -1579,9 +1579,98 @@ def cmd_skills(args) -> None:
         scope=args.scope,
         with_mcp=args.with_mcp,
         dry_run=args.dry_run,
+        with_push=args.with_push,
     )
     if code:
         sys.exit(code)
+
+
+# -- proactive notifications ---------------------------------------------------
+
+
+def cmd_watch(args) -> None:
+    """`lloom watch` — signal that mail is waiting, never claim it (see
+    watch.py). `--format jsonl` feeds the Pi/OpenCode adapters; `--format
+    line` prints the rendered sentence for waking signals only, one per line,
+    which is what a Claude Code plugin monitor turns into a notification."""
+    from .watch import render_signal, watch_loop
+
+    cfg = ensure_config(args.config)
+    key = _require_key(cfg)
+    url = _server_url(cfg, args.server)
+
+    def emit(event: dict) -> None:
+        if args.format == "jsonl":
+            if event["type"] == "signal":
+                # adapters inject this verbatim: the wording lives in watch.py once
+                event = {**event, "text": render_signal(event)}
+            print(json.dumps(event), flush=True)
+        elif event["type"] == "signal" and event["wake"]:
+            print(render_signal(event), flush=True)
+        elif event["type"] == "status":
+            print(f"lloom watch: {event['message']}", file=sys.stderr, flush=True)
+
+    if args.once:
+        from .watch import signal_event
+
+        try:
+            with Client(url, key) as c:
+                peek = c.pending()
+        except LloomError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(3 if exc.code == "peek_unsupported" else 1)
+        event = signal_event(peek, wake=False, reason="once")
+        if args.format == "jsonl":
+            print(json.dumps(event))
+        else:
+            print(render_signal(event) if event["pending"] else "lloom: no mail waiting")
+        return
+
+    import anyio
+
+    from .client import AsyncClient
+
+    async def run() -> int:
+        async with AsyncClient(url, key) as c:
+            return await watch_loop(
+                c, emit, wake=args.wake, wait=args.wait, debounce=args.debounce
+            )
+
+    try:
+        code = anyio.run(run)
+    except KeyboardInterrupt:
+        code = 0
+    if code:
+        sys.exit(code)
+
+
+def cmd_hook(args) -> None:
+    """`lloom hook context|stop` — a harness hook (Claude Code, Codex). Reads
+    the hook's JSON on stdin, peeks once, prints the hook's JSON answer or
+    nothing. A hook must never break the session it runs in, so every failure
+    is a quiet no-op with one line on stderr."""
+    from .watch import hook_response
+
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    cfg = ensure_config(args.config)
+    key = cfg.get("api_key")
+    if not key:
+        return
+    try:
+        with Client(_server_url(cfg, args.server), key, timeout=args.timeout) as c:
+            peek = c.pending()
+    except Exception as exc:
+        print(f"lloom hook: {exc}", file=sys.stderr)
+        return
+    out = hook_response(args.event, payload, peek, cfg.state_dir())
+    if out is not None:
+        print(json.dumps(out))
 
 
 # -- proxy --------------------------------------------------------------------
@@ -1598,7 +1687,8 @@ def cmd_proxy(args) -> None:
         sys.exit(2)
     from .proxy import run_stdio
 
-    run_stdio(_server_url(cfg, args.server), key, cfg)
+    channel = args.channel or os.environ.get("LLOOM_CHANNEL", "").strip() not in ("", "0")
+    run_stdio(_server_url(cfg, args.server), key, cfg, channel=channel, wake=args.wake)
 
 
 # -- parser -------------------------------------------------------------------
@@ -1830,7 +1920,30 @@ def main(argv: list[str] | None = None) -> None:
     p_search.add_argument("pattern")
     p.set_defaults(func=cmd_mail)
 
-    sub.add_parser("mcp-proxy").set_defaults(func=cmd_proxy)
+    p = sub.add_parser("mcp-proxy", help="run the stdio MCP server `lloom`")
+    p.add_argument("--channel", action="store_true",
+                   help="also act as a Claude Code channel: notify the session when mail is waiting"
+                        " (counts only; nothing is claimed). Same as LLOOM_CHANNEL=1. Launch Claude"
+                        " Code with --dangerously-load-development-channels server:lloom")
+    p.add_argument("--wake", choices=["private", "all", "none"], default="private",
+                   help="channel mode: what wakes the session (default: newly arrived private mail)")
+    p.set_defaults(func=cmd_proxy)
+
+    p = sub.add_parser("watch", help="notify when mail is waiting — peeks, never claims")
+    p.add_argument("--format", choices=["jsonl", "line"], default="line",
+                   help="jsonl: one event per line (adapters); line: the rendered notice, waking signals only")
+    p.add_argument("--wake", choices=["private", "all", "none"], default="private",
+                   help="what wakes the session (default: newly arrived private mail)")
+    p.add_argument("--wait", type=int, default=30, help="long-poll window per peek, seconds")
+    p.add_argument("--debounce", type=float, default=3.0, help="coalesce a burst of mail, seconds")
+    p.add_argument("--once", action="store_true", help="peek once, print, exit (never blocks)")
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("hook", help="harness hook entry point (Claude Code, Codex): JSON in, JSON out")
+    p.add_argument("event", choices=["context", "stop"],
+                   help="context: SessionStart/UserPromptSubmit additionalContext; stop: Stop-hook block on private mail")
+    p.add_argument("--timeout", type=float, default=5.0, help="peek timeout, seconds")
+    p.set_defaults(func=cmd_hook)
 
     p = sub.add_parser("skills", help="install the canonical .agents/skills for a coding agent")
     skills_sub = p.add_subparsers(dest="skills_cmd", required=True)
@@ -1852,6 +1965,9 @@ def main(argv: list[str] | None = None) -> None:
                             "plus the shared ~/.agents/skills copy")
     p_inst.add_argument("--with-mcp", action="store_true",
                         help="also register the lloom mcp-proxy with the agent (prints paste-ready snippets; only writes inside the repo, plus the OpenCode global config merge)")
+    p_inst.add_argument("--with-push", action="store_true",
+                        help="also wire proactive 'mail is waiting' notices: the Pi extension / OpenCode plugin,"
+                             " or `lloom hook` entries in Claude Code settings.json / Codex hooks.json")
     p_inst.add_argument("--dry-run", action="store_true", help="print the exact plan without writing")
     p_inst.set_defaults(func=cmd_skills)
 

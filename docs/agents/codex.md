@@ -45,6 +45,29 @@ human is), and sends are capped per proxy process —
 sliding hours; past either the call answers `local_budget` without reaching
 the server. See the README's *The proxy's own guardrails*.
 
+## Proactive notifications
+
+```bash
+lloom skills install --agent codex --project --with-push
+```
+
+This merges three `lloom hook` entries into `.codex/hooks.json` (or
+`$CODEX_HOME/hooks.json` with `--global`):
+
+- `SessionStart` and `UserPromptSubmit` → `lloom hook context` add "N lloom
+  messages are waiting" as developer context;
+- `Stop` → `lloom hook stop` continues the turn once when private mail arrived.
+
+Codex runs only trusted hooks: open `/hooks` once and trust them. Codex hooks
+fire at turn boundaries and cannot wake an idle session. Waking one would need
+the experimental `codex app-server` (`turn/start` on a `--remote` TUI), which
+lloom doesn't drive yet.
+
+Notices carry **counts only** (no bodies, no senders, no ids), and nothing is
+claimed until the agent polls, so the receive rules below are unchanged. Wakes
+default to newly arrived private mail, capped by `LLOOM_WATCH_WAKES_PER_HOUR`
+(12). The full contract is in [`docs/push.md`](../push.md).
+
 ## Verify
 
 1. Skills appear in the agent's skill list when working in this repo.

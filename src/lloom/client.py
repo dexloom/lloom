@@ -99,6 +99,18 @@ def _handle_response(r: httpx.Response) -> dict:
     raise LloomError(code, message, r.status_code, retry_after=retry_after, details=details)
 
 
+def _peek_error(exc: LloomError) -> LloomError:
+    """A 404 on the peek path means the hub has no such route — an older hub,
+    not a missing mailbox. Say so in a code callers can branch on."""
+    if exc.status == 404:
+        return LloomError(
+            "peek_unsupported",
+            "this hub has no GET /v1/mailbox/pending; proactive notifications need a newer hub",
+            404,
+        )
+    return exc
+
+
 def _headers(api_key: str | None, authed: bool) -> dict:
     headers = {"Content-Type": "application/json"}
     if authed and api_key:
@@ -226,6 +238,26 @@ class Client:
         # time out first. Extend this request's timeout past the wait.
         timeout = self._timeout if wait <= 0 else max(self._timeout, wait + 15.0)
         return self._request("GET", "/v1/mailbox", params=params, timeout=timeout)
+
+    def pending(self, since: str | None = None, wait: int = 0) -> dict:
+        """Peek at the mailbox WITHOUT claiming: counts of pending deliveries
+        plus an opaque `token` naming the newest one (`GET /v1/mailbox/pending`).
+
+        Nothing changes state — the agent's own poll still claims. With
+        `since` (a token from an earlier peek) and `wait`, the hub holds the
+        request until a delivery newer than `since` is pending; without
+        `since` it answers at once. A hub that predates the endpoint answers
+        404, raised as `peek_unsupported`."""
+        params: dict[str, Any] = {}
+        if since:
+            params["since"] = since
+        if wait:
+            params["wait"] = wait
+        timeout = self._timeout if wait <= 0 else max(self._timeout, wait + 15.0)
+        try:
+            return self._request("GET", "/v1/mailbox/pending", params=params, timeout=timeout)
+        except LloomError as exc:
+            raise _peek_error(exc) from None
 
     def ack(self, delivery_id: str) -> dict:
         return self._post(f"/v1/deliveries/{delivery_id}/ack", {})
@@ -432,6 +464,19 @@ class AsyncClient:
         # client-times-out before the server's normal empty return
         timeout = self._timeout if wait <= 0 else max(self._timeout, wait + 15.0)
         return await self._request("GET", "/v1/mailbox", params=params, timeout=timeout)
+
+    async def pending(self, since: str | None = None, wait: int = 0) -> dict:
+        """Non-claiming mailbox peek; see `Client.pending`."""
+        params: dict[str, Any] = {}
+        if since:
+            params["since"] = since
+        if wait:
+            params["wait"] = wait
+        timeout = self._timeout if wait <= 0 else max(self._timeout, wait + 15.0)
+        try:
+            return await self._request("GET", "/v1/mailbox/pending", params=params, timeout=timeout)
+        except LloomError as exc:
+            raise _peek_error(exc) from None
 
     async def ack(self, delivery_id: str) -> dict:
         return await self._post(f"/v1/deliveries/{delivery_id}/ack", {})

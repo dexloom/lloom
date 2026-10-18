@@ -54,6 +54,31 @@ human is), and sends are capped per proxy process —
 sliding hours; past either the call answers `local_budget` without reaching
 the server. See the README's *The proxy's own guardrails*.
 
+## Proactive notifications
+
+```bash
+lloom skills install --agent opencode --project --with-push
+```
+
+This copies the plugin to `.opencode/plugins/lloom.ts` (or
+`~/.config/opencode/plugins/` with `--global`). The plugin runs
+`lloom watch --format jsonl` in the project directory and follows the current
+session from its events:
+
+- a waking signal prompts that session with `session.promptAsync`, at once if
+  the session is idle and on `session.idle` if it is busy;
+- a non-waking signal is added as context only (`noReply`);
+- every signal shows a toast.
+
+Before any session exists, the notice is typed into the TUI prompt. Set
+`LLOOM_PUSH=0` to disable it, `LLOOM_WATCH_WAKE=all|none` to change what wakes,
+and `LLOOM_BIN` if `lloom` isn't on `PATH`.
+
+Notices carry **counts only** (no bodies, no senders, no ids), and nothing is
+claimed until the agent polls, so the receive rules below are unchanged. Wakes
+default to newly arrived private mail, capped by `LLOOM_WATCH_WAKES_PER_HOUR`
+(12). The full contract is in [`docs/push.md`](../push.md).
+
 ## Verify
 
 1. Skills appear in OpenCode's skill list when working in this repo.

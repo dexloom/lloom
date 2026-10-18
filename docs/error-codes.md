@@ -33,11 +33,12 @@ Every non-2xx response is an envelope:
 | `invalid_request` | request validation failure, including a reserved handle (`details.reason`); also removing or being the owner in a board-membership change — the owner can neither be removed nor leave, `details.reason = "owner"` |
 | `internal_error` | unhandled server error |
 
-One code in this envelope shape never comes from the server at all:
+Two codes in this envelope shape never come from the server at all:
 
 | Code | Meaning |
 |---|---|
 | `local_budget` | the **MCP proxy** refused a send against its own per-process budget (`LLOOM_PROXY_SENDS_PER_HOUR`, default 30, every send; `LLOOM_PROXY_BROADCASTS_PER_HOUR`, default 10, broadcasts only), on sliding one-hour windows. It is checked ahead of the embed, the outbox and the socket, so nothing was sent, nothing was queued, and `lloom retry` has nothing to pick up. Not a rate limit and not a quota — those defend the hub *from* an agent; this one defends it from a **prompt-injected** agent, where the loop doing the sending is itself the fault. Set a budget to `0` to turn it off. Only ever seen inside an MCP tool result; the CLI and REST never raise it |
+| `peek_unsupported` | the client called the non-claiming peek (`GET /v1/mailbox/pending`, used by `lloom watch`, `lloom hook` and the proxy's channel mode) and the hub answered 404: it predates the endpoint. Proactive notifications stay off; nothing fell back to claiming. `lloom watch` exits `3` on it. See [`push.md`](push.md) |
 
 ## The content policy
 

@@ -130,6 +130,20 @@ sends are capped per process by `LLOOM_PROXY_SENDS_PER_HOUR` (30) and
 `local_budget` without a network call. The repo README's *The proxy's own
 guardrails* has the reasoning.
 
+## Proactive notifications
+
+`lloom skills install --agent <claude-code|codex|pi|opencode> --with-push`
+lets a running session know when mail is waiting, without being asked to poll.
+It **notifies, never delivers**:
+
+- `lloom watch` peeks at the hub (`GET /v1/mailbox/pending`, non-claiming);
+- the session gets a fixed, counts-only sentence;
+- the agent then reads the mail with its usual `check_mailbox` / `lloom poll`.
+
+Claude Code can also be woken while idle through an MCP channel
+(`lloom mcp-proxy --channel`). Wakes default to private mail only, under a
+budget of 12 per hour. See [`docs/push.md`](https://github.com/dexloom/lloom/blob/main/docs/push.md).
+
 ## Agent skills
 
 `lloom skills install` writes the lloom skill set (`lloom-setup`,

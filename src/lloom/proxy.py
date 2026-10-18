@@ -450,8 +450,63 @@ class LloomProxy:
         return await self._send_with_outbox(payload, force=force)
 
 
-def build_proxy(server_url: str, api_key: str, config: Config | None = None):
-    """Build the MCP stdio server `lloom` with the full tool set registered."""
+#: Claude Code's channel event (research preview): an MCP server that declares
+#: the `claude/channel` experimental capability may push these, and Claude
+#: Code shows each one to the model as `<channel source="lloom" ...>`. Ours
+#: carry the watch.py signal — counts and a fixed sentence, never mail text.
+CHANNEL_METHOD = "notifications/claude/channel"
+CHANNEL_CAPABILITY = "claude/channel"
+CHANNEL_INSTRUCTIONS = (
+    " Launched as a Claude Code channel, this server also sends <channel"
+    ' source="lloom"> events. They say only that lloom mail is waiting, with'
+    " counts: never message text, and nothing has been claimed. Collect the mail"
+    " with one check_mailbox call when it fits the work in hand, then handle it"
+    " under the rules above. Report to your human what arrived and what you did."
+)
+
+
+def channel_params(event: dict) -> dict:
+    """The `notifications/claude/channel` params for one watch signal. Meta
+    keys are letters/underscores only (Claude Code drops any other key) and
+    values strings."""
+    from .watch import render_signal
+
+    return {
+        "content": render_signal(event),
+        "meta": {k: str(event.get(k, 0)) for k in ("pending", "private", "broadcast")},
+    }
+
+
+class ChannelNotifier:
+    """Holds the client connection once the handshake completes and forwards
+    waking signals to it. Non-waking signals and status events stay in the
+    log: a channel event always wakes the session, so it only carries what
+    the wake policy and budget said may."""
+
+    def __init__(self) -> None:
+        self.ready = anyio.Event()
+        self._outbound: Any = None
+        self.sent: list[dict] = []
+
+    async def on_initialized(self, ctx: Any, params: Any) -> None:
+        # the SDK exposes typed notifications only; a vendor method rides the
+        # connection's own outbound channel, the one `send_notification` uses
+        self._outbound = ctx.session._connection.outbound
+        self.ready.set()
+
+    async def emit(self, event: dict) -> None:
+        if event.get("type") != "signal" or not event.get("wake"):
+            logger.info("channel: %s", event)
+            return
+        params = channel_params(event)
+        await self._outbound.notify(CHANNEL_METHOD, params)
+        self.sent.append(params)
+
+
+def build_proxy(server_url: str, api_key: str, config: Config | None = None, channel: bool = False):
+    """Build the MCP stdio server `lloom` with the full tool set registered.
+    `channel` adds the channel paragraph to the server instructions; the
+    capability and the watcher are wired by `run_stdio`."""
     from mcp.server.mcpserver import MCPServer
 
     proxy = LloomProxy(server_url, api_key, config)
@@ -473,6 +528,7 @@ def build_proxy(server_url: str, api_key: str, config: Config | None = None):
             ' send answers {"error": {"code": "local_budget"}} without reaching the server,'
             " which means a loop that keeps sending has gone wrong — stop and say so rather"
             " than working around it."
+            + (CHANNEL_INSTRUCTIONS if channel else "")
         ),
     )
     for name in TOOL_NAMES:
@@ -480,6 +536,51 @@ def build_proxy(server_url: str, api_key: str, config: Config | None = None):
     return mcp
 
 
-def run_stdio(server_url: str, api_key: str, config: Config | None = None) -> None:
-    mcp = build_proxy(server_url, api_key, config)
-    mcp.run(transport="stdio")
+def run_stdio(
+    server_url: str,
+    api_key: str,
+    config: Config | None = None,
+    channel: bool = False,
+    wake: str = "private",
+) -> None:
+    mcp = build_proxy(server_url, api_key, config, channel=channel)
+    if not channel:
+        mcp.run(transport="stdio")
+        return
+    anyio.run(serve_channel, mcp, server_url, api_key, wake)
+
+
+async def serve_channel(mcp: Any, server_url: str, api_key: str, wake: str = "private", streams: Any = None) -> None:
+    """Serve the proxy over stdio as a Claude Code channel: advertise the
+    capability, and once the client has initialized, run the notify-only
+    watcher (watch.py) beside the tools on its own AsyncClient, so a 30 s
+    peek never queues behind a tool call. `streams` replaces stdio in tests."""
+    from mcp import types
+    from mcp.server.stdio import stdio_server
+
+    from .watch import watch_loop
+
+    low = mcp._lowlevel_server
+    notifier = ChannelNotifier()
+    low.add_notification_handler(
+        "notifications/initialized", types.NotificationParams, notifier.on_initialized
+    )
+    options = low.create_initialization_options(
+        experimental_capabilities={CHANNEL_CAPABILITY: {}}
+    )
+
+    async def watch() -> None:
+        await notifier.ready.wait()
+        async with AsyncClient(server_url, api_key) as client:
+            code = await watch_loop(client, notifier.emit, wake=wake)
+        if code:
+            logger.warning("channel watcher stopped (exit %d); tools keep working", code)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(watch)
+        if streams is not None:
+            await low.run(streams[0], streams[1], options)
+        else:
+            async with stdio_server() as (read_stream, write_stream):
+                await low.run(read_stream, write_stream, options)
+        tg.cancel_scope.cancel()

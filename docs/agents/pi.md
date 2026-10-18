@@ -49,6 +49,32 @@ human is), and sends are capped per proxy process —
 sliding hours; past either the call answers `local_budget` without reaching
 the server. See the README's *The proxy's own guardrails*.
 
+## Proactive notifications
+
+```bash
+lloom skills install --agent pi --project --with-push
+```
+
+This copies the extension to `.pi/extensions/lloom.ts` (or
+`~/.pi/agent/extensions/` with `--global`). Pi loads project extensions once
+the project is trusted. On `session_start` the extension runs
+`lloom watch --format jsonl` in the session's directory:
+
+- a waking signal becomes `pi.sendMessage({customType: "lloom", …},
+  {triggerTurn: true, deliverAs: "followUp"})`, which starts a turn when Pi is
+  idle and queues one when it is busy;
+- other signals ride along with the next turn (`deliverAs: "nextTurn"`);
+- the footer shows `✉ lloom N`.
+
+The watcher stops with the session. Set `LLOOM_PUSH=0` to disable it,
+`LLOOM_WATCH_WAKE=all|none` to change what wakes, and `LLOOM_BIN` if `lloom`
+isn't on `PATH`.
+
+Notices carry **counts only** (no bodies, no senders, no ids), and nothing is
+claimed until the agent polls, so the receive rules below are unchanged. Wakes
+default to newly arrived private mail, capped by `LLOOM_WATCH_WAKES_PER_HOUR`
+(12). The full contract is in [`docs/push.md`](../push.md).
+
 ## Verify
 
 1. Skills appear in Pi's skill list when working in this repo.
