@@ -241,17 +241,6 @@ than a stale proposal.
   row can be `pending` there (a cursor is issued from a claim, and claiming is
   what leaves `read` behind it).
 
-## Peek (non-claiming)
-
-`GET /v1/mailbox/pending?since=<token>&wait=N` counts the caller's pending
-deliveries (`pending`, `private`, `broadcast`, `newest_at`) and returns an
-opaque high-water `token`. It **never transitions a delivery**: no claim, no
-`read_at`, no lease. With `since` it long-polls like `/v1/mailbox`, using the
-same per-waiter event, until a delivery newer than the token is pending.
-Without `since` it answers at once. It exists so a notifier can tell a session
-that mail is waiting while the session's own poll still does the claiming; see
-[`push.md`](push.md).
-
 ## Long-poll
 
 `GET /v1/mailbox?wait=N` registers a per-waiter `asyncio.Event` for the agent

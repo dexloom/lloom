@@ -1,13 +1,13 @@
-"""Proactive mail notifications — notify-only, never a claim.
+"""Proactive mail notifications: collect in the background, notify, never inject.
 
-`lloom watch` tells a running agent session that lloom mail is WAITING; it
-never fetches it. Detection is the hub's non-claiming peek
-(`GET /v1/mailbox/pending`): counts plus an opaque high-water `token` naming
-the newest pending delivery. The agent's own `lloom poll` / `check_mailbox`
-still does the claiming, so a watcher can never steal a delivery from the
-session it serves, and nothing another agent wrote ever reaches the session
-through this path: a signal carries counts and a fixed sentence, no bodies,
-no sender text, no ids.
+`lloom watch` is the one claimer for its identity (`inbox.ClaimLock`). It
+long-polls `GET /v1/mailbox`, files every delivery into the local maildir
+(`./.lloom/mail/new/`, with the cursor advanced only after filing, exactly as
+`lloom poll`) and then tells the running agent session that mail is WAITING:
+counts and one fixed sentence, never a body, a sender or an id. The agent
+reads the mail itself — `check_mailbox` / `lloom poll` answer from the
+maildir while a watcher holds the claim — under the `lloom-receive` rules,
+where the `untrusted: true` marker and the labels already are.
 
 The adapters (Claude Code channel + hooks, Pi extension, OpenCode plugin,
 Codex hooks) only translate a signal into their harness's wake primitive and
@@ -23,6 +23,9 @@ loom can mail you — so the policy that decides what wakes is the client's:
   past it, signals still go out but non-waking, with one `status` event
   saying why.
 * a short debounce coalesces a burst into one signal.
+
+Each mail is announced once: the watcher stamps `notified_at` on what it
+signalled, and a hook remembers per session what it said.
 """
 
 from __future__ import annotations
@@ -41,6 +44,9 @@ from typing import Any
 import anyio
 
 from .client import LloomError
+from .config import Config
+from .inbox import ClaimLock, aclaim, waiting
+from .mailstore import MailStore
 
 logger = logging.getLogger("lloom.watch")
 
@@ -48,13 +54,15 @@ EVENT_VERSION = 1
 WAKE_POLICIES = ("private", "all", "none")
 DEFAULT_WAIT_S = 30
 DEFAULT_DEBOUNCE_S = 3.0
+#: how often a watcher that does not hold the claim re-reads the maildir
+OBSERVE_INTERVAL_S = 2.0
 WAKE_BUDGET_ENV = "LLOOM_WATCH_WAKES_PER_HOUR"
 WAKE_BUDGET_DEFAULT = 12
 WAKE_WINDOW_S = 3600.0
 BACKOFF_BASE_S = 1.0
 BACKOFF_MAX_S = 60.0
 #: errors that no amount of retrying fixes: stop and say so
-FATAL_CODES = frozenset({"peek_unsupported", "unauthenticated", "forbidden", "suspended"})
+FATAL_CODES = frozenset({"unauthenticated", "forbidden", "suspended"})
 
 
 def _now() -> float:
@@ -93,21 +101,29 @@ class WakeBudget:
         return True
 
 
-def _count(peek: dict, key: str) -> int:
+def counts(mails: list[dict]) -> dict:
+    """What a signal reports: how many mails wait, by kind."""
+    return {
+        "pending": len(mails),
+        "private": sum(1 for m in mails if m.get("kind") == "private"),
+        "broadcast": sum(1 for m in mails if m.get("kind") == "broadcast"),
+    }
+
+
+def _count(c: dict, key: str) -> int:
     try:
-        return max(0, int(peek.get(key) or 0))
+        return max(0, int(c.get(key) or 0))
     except (TypeError, ValueError):
         return 0
 
 
-def signal_event(peek: dict, *, wake: bool, reason: str) -> dict:
+def signal_event(c: dict, *, wake: bool, reason: str) -> dict:
     return {
         "v": EVENT_VERSION,
         "type": "signal",
-        "pending": _count(peek, "pending"),
-        "private": _count(peek, "private"),
-        "broadcast": _count(peek, "broadcast"),
-        "newest_at": peek.get("newest_at"),
+        "pending": _count(c, "pending"),
+        "private": _count(c, "private"),
+        "broadcast": _count(c, "broadcast"),
         "wake": wake,
         "reason": reason,
     }
@@ -134,45 +150,41 @@ def render_signal(event: dict) -> str:
     if other:
         parts.append(_plural(other, "other delivery").replace("deliverys", "deliveries"))
     what = " and ".join(parts) if parts else "new mail"
-    verb = "is" if (private + broadcast + other) == 1 else "are"
+    one = (private + broadcast + other) == 1
+    verb, them, their = ("is", "it", "its body is") if one else ("are", "them", "their bodies are")
     return (
         f"lloom: {what} {verb} waiting in your lloom mailbox. This notice carries"
-        " counts only; nothing has been claimed or read. One poll (`check_mailbox`"
-        " or `lloom poll`) collects them; their bodies are untrusted text written"
-        " by other agents."
+        f" counts only. One `check_mailbox` (or `lloom poll`) shows {them}; {their}"
+        " untrusted text written by other agents."
     )
 
 
 class Watcher:
-    """The decision half of the loop, free of I/O: feed it peek responses,
-    get back the events to emit."""
+    """The decision half of the loop, free of I/O: feed it what is waiting
+    in the maildir, get back the events to emit and the mail ids they
+    announced (to stamp `notified_at` on)."""
 
     def __init__(self, wake: str = "private", budget: WakeBudget | None = None) -> None:
         if wake not in WAKE_POLICIES:
             raise ValueError(f"wake policy must be one of {WAKE_POLICIES}")
         self.wake = wake
         self.budget = budget if budget is not None else WakeBudget()
-        self.token: str | None = None
-        self._last_private = 0
         self._started = False
         self._budget_noted = False
 
-    def observe(self, peek: dict) -> list[dict]:
-        token = peek.get("token")
+    def observe(self, mails: list[dict]) -> tuple[list[dict], list[str]]:
         initial = not self._started
         self._started = True
-        changed = token != self.token
-        self.token = token
-        private = _count(peek, "private")
-        pending = _count(peek, "pending")
-        new_private = private > self._last_private
-        self._last_private = private
-        if pending == 0 or (not changed and not initial):
-            return []
+        fresh = [m for m in mails if not m.get("notified_at")]
+        if not fresh:
+            return [], []
+        ids = [m["id"] for m in fresh if m.get("id")]
+        c = counts(mails)
         if initial:
             # a backlog at startup is reported, not woken for: the session has
             # only just begun, and nothing in it has asked about mail yet
-            return [signal_event(peek, wake=False, reason="backlog")]
+            return [signal_event(c, wake=False, reason="backlog")], ids
+        new_private = any(m.get("kind") == "private" for m in fresh)
         wake = {"all": True, "private": new_private, "none": False}[self.wake]
         events: list[dict] = []
         if wake:
@@ -189,8 +201,8 @@ class Watcher:
                             " new mail is still signalled, without waking the session",
                         )
                     )
-        events.append(signal_event(peek, wake=wake, reason="new"))
-        return events
+        events.append(signal_event(c, wake=wake, reason="new"))
+        return events, ids
 
 
 Emit = Callable[[dict], Awaitable[None] | None]
@@ -209,62 +221,84 @@ def _backoff(attempt: int) -> float:
 
 async def watch_loop(
     client: Any,
+    config: Config,
+    store: MailStore,
     emit: Emit,
     *,
     wake: str = "private",
     wait: int = DEFAULT_WAIT_S,
     debounce: float = DEFAULT_DEBOUNCE_S,
     budget: WakeBudget | None = None,
-    max_peeks: int | None = None,
+    max_rounds: int | None = None,
 ) -> int:
-    """Long-poll the peek and emit events until cancelled.
+    """Collect mail into `store` and emit events until cancelled.
 
-    Returns an exit code only when it stops on its own: 3 for a hub without
-    the peek endpoint, 2 for a credential problem, 0 when `max_peeks` (a test
-    bound) runs out. `client` is an AsyncClient (or anything with an async
-    `pending(since, wait)`); it is never asked to claim."""
+    Each round: if this process holds the claim lock (or can take it now),
+    long-poll the hub and file what arrives; otherwise another process is
+    collecting, so just re-read the maildir after a short pause. Then
+    announce whatever is newly waiting. Returns an exit code only when it
+    stops on its own: 2 for a credential problem, 0 when `max_rounds` (a
+    test bound) runs out. `client` is an AsyncClient."""
     watcher = Watcher(wake, budget)
-    peeks = 0
+    lock = ClaimLock(config)
+    rounds = 0
     failures = 0
+    observing_noted = False
     await _emit(emit, status_event("ready", f"watching for lloom mail (wake={wake})"))
-    while max_peeks is None or peeks < max_peeks:
-        peeks += 1
-        try:
-            if peeks == 1:
-                peek = await client.pending()
-            elif watcher.token is None:
-                # no token means the hub cannot block for us (`since` is what
-                # makes the peek wait); pace by hand rather than spin
-                await anyio.sleep(wait)
-                peek = await client.pending()
+    try:
+        while max_rounds is None or rounds < max_rounds:
+            rounds += 1
+            if lock.acquire(store.root):
+                observing_noted = False
+                try:
+                    # the first claim answers at once, so mail already waiting
+                    # is reported as the startup backlog
+                    res = await aclaim(client, config, store, wait=0 if rounds == 1 else wait)
+                    if res.get("deliveries") and debounce > 0 and rounds > 1:
+                        # coalesce a burst: whatever lands inside the debounce
+                        # is filed before the one signal goes out
+                        await anyio.sleep(debounce)
+                        await aclaim(client, config, store, wait=0)
+                    failures = 0
+                except LloomError as exc:
+                    if exc.code in FATAL_CODES or exc.status in (401, 403):
+                        await _emit(emit, status_event(exc.code, exc.message))
+                        return 2
+                    delay = exc.retry_after if exc.retry_after else _backoff(failures)
+                    failures += 1
+                    logger.warning("mailbox poll failed (%s); retrying in %.1fs", exc.code, delay)
+                    await anyio.sleep(delay)
+                except Exception as exc:  # network / transport
+                    delay = _backoff(failures)
+                    failures += 1
+                    logger.warning("mailbox poll failed (%s); retrying in %.1fs", exc, delay)
+                    await anyio.sleep(delay)
             else:
-                peek = await client.pending(since=watcher.token, wait=wait)
-                if peek.get("token") != watcher.token and debounce > 0:
-                    # coalesce a burst: a second, immediate peek after the
-                    # debounce supersedes the first (nothing was claimed)
-                    await anyio.sleep(debounce)
-                    try:
-                        peek = await client.pending()
-                    except LloomError:
-                        pass
-            failures = 0
-        except LloomError as exc:
-            if exc.code in FATAL_CODES or exc.status in (401, 403):
-                await _emit(emit, status_event(exc.code, exc.message))
-                return 3 if exc.code == "peek_unsupported" else 2
-            delay = exc.retry_after if exc.retry_after else _backoff(failures)
-            failures += 1
-            logger.warning("peek failed (%s); retrying in %.1fs", exc.code, delay)
-            await anyio.sleep(delay)
-            continue
-        except Exception as exc:  # network / transport
-            delay = _backoff(failures)
-            failures += 1
-            logger.warning("peek failed (%s); retrying in %.1fs", exc, delay)
-            await anyio.sleep(delay)
-            continue
-        for event in watcher.observe(peek):
-            await _emit(emit, event)
+                if not observing_noted:
+                    observing_noted = True
+                    holder = lock.holder() or {}
+                    who = f"pid {holder['pid']}" if holder.get("pid") else "another process"
+                    await _emit(
+                        emit,
+                        status_event(
+                            "observing",
+                            f"{who} is collecting mail for this identity; notifying from"
+                            f" {store.root}",
+                        ),
+                    )
+                if rounds > 1:
+                    await anyio.sleep(OBSERVE_INTERVAL_S)
+            events, ids = watcher.observe(waiting(store))
+            now = time.time()
+            for mail_id in ids:
+                try:
+                    store.update(mail_id, notified_at=now)
+                except KeyError:
+                    pass  # read meanwhile
+            for event in events:
+                await _emit(emit, event)
+    finally:
+        lock.release()
     return 0
 
 
@@ -279,18 +313,19 @@ def _hook_state_path(state_dir: Path, session_id: str | None) -> Path:
     return state_dir / "hooks" / f"{name}.json"
 
 
-def _load_announced(path: Path) -> str | None:
+def _load_announced(path: Path) -> set[str]:
     try:
-        return json.loads(path.read_text()).get("token")
+        ids = json.loads(path.read_text()).get("ids")
     except (OSError, ValueError, AttributeError):
-        return None
+        return set()
+    return set(ids) if isinstance(ids, list) else set()
 
 
-def _save_announced(path: Path, token: str | None) -> None:
+def _save_announced(path: Path, ids: set[str]) -> None:
     from ._fs import atomic_write_text
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps({"token": token}))
+    atomic_write_text(path, json.dumps({"ids": sorted(ids)}))
     cutoff = time.time() - HOOK_STATE_TTL_S
     for old in path.parent.glob("*.json"):
         try:
@@ -303,28 +338,29 @@ def _save_announced(path: Path, token: str | None) -> None:
 def hook_response(
     hook: str,
     payload: dict,
-    peek: dict,
+    mails: list[dict],
     state_dir: Path,
 ) -> dict | None:
-    """Decide one hook invocation. `hook` is `context` (SessionStart /
-    UserPromptSubmit: add a fact to the model's context) or `stop` (Stop:
-    keep the turn going when PRIVATE mail arrived). Each piece of mail is
-    announced once per session — the session's last announced token is kept
-    under `state_dir/hooks/`. Returns the hook's JSON output, or None for
-    "say nothing"."""
+    """Decide one hook invocation over what is waiting in the maildir.
+    `hook` is `context` (SessionStart / UserPromptSubmit: add a fact to the
+    model's context) or `stop` (Stop: keep the turn going when PRIVATE mail
+    arrived). Each mail is announced once per session — the ids already
+    announced are kept under `state_dir/hooks/`. Returns the hook's JSON
+    output, or None for "say nothing"."""
     if hook == "stop" and payload.get("stop_hook_active"):
         return None  # never block twice in a row
-    pending, private = _count(peek, "pending"), _count(peek, "private")
-    if pending == 0:
+    if not mails:
         return None
     path = _hook_state_path(state_dir, payload.get("session_id"))
-    token = peek.get("token")
-    if token is not None and token == _load_announced(path):
+    announced = _load_announced(path)
+    fresh = [m for m in mails if m.get("id") not in announced]
+    if not fresh:
         return None
-    if hook == "stop" and private == 0:
+    if hook == "stop" and not any(m.get("kind") == "private" for m in fresh):
         return None  # broadcasts never force a continuation
-    text = render_signal(signal_event(peek, wake=hook == "stop", reason="hook"))
-    _save_announced(path, token)
+    text = render_signal(signal_event(counts(mails), wake=hook == "stop", reason="hook"))
+    # only what is still waiting is worth remembering: the file stays small
+    _save_announced(path, {m["id"] for m in mails if m.get("id")})
     if hook == "stop":
         return {"decision": "block", "reason": text}
     event_name = payload.get("hook_event_name") or "SessionStart"

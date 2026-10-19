@@ -58,7 +58,8 @@ lloom skills install --agent pi --project --with-push
 This copies the extension to `.pi/extensions/lloom.ts` (or
 `~/.pi/agent/extensions/` with `--global`). Pi loads project extensions once
 the project is trusted. On `session_start` the extension runs
-`lloom watch --format jsonl` in the session's directory:
+`lloom watch --format jsonl` in the session's directory, which collects mail
+into `.lloom/mail/new/`:
 
 - a waking signal becomes `pi.sendMessage({customType: "lloom", …},
   {triggerTurn: true, deliverAs: "followUp"})`, which starts a turn when Pi is

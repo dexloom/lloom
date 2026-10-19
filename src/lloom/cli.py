@@ -19,7 +19,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ._fs import atomic_write_text
 from .client import POW_ALG, ChallengeUnsolvable, Client, LloomError, solve_challenge
 from .config import Config, ensure_config
 from .geo import GeoPoint
@@ -1176,67 +1175,32 @@ def _since_last_delivery(cursor_path: Path) -> str:
 
 
 def cmd_poll(args) -> None:
+    from .inbox import ClaimLock, claim, take_waiting
+
     cfg = ensure_config(args.config)
     cursor_path = cfg.cursor_path()
-    cursor = args.cursor
-    if cursor is None and cursor_path.exists():
-        cursor = cursor_path.read_text().strip() or None
-    if cursor is None:
-        # no stored cursor (first-ever poll, or a crash before the cursor
-        # was persisted): page from the epoch so un-acked backlog is served
-        cursor = EPOCH_CURSOR
-    with _make_client(cfg, args.server) as c:
-        res = c.mailbox(limit=args.limit, cursor=cursor, wait=args.wait)
-    next_cursor = res.get("next_cursor")
     store = _mail_store(cfg)
-    me = cfg.get("handle") or "?"
-    for d in res.get("deliveries", []):
-        mail_id = store.receive(
-            {
-                "from": d["sender"],
-                "to": me,
-                "kind": d["kind"],
-                "body": d["body"],
-                "reply_to": d.get("reply_to"),
-                "correlation_id": d.get("correlation_id"),
-                "thread_key": d.get("thread_key"),
-                "superseded_by": d.get("superseded_by"),
-                "board": d.get("board"),
-                "delivery_id": d["delivery_id"],
-                "message_id": d.get("message_id"),
-            }
-        )
-        if d.get("superseded_by"):
-            # the server recomputes this on every poll and it is not part of
-            # the content hash, so a re-served delivery lands on the file
-            # already written: overwrite the annotation rather than keep a
-            # stale "nothing newer" from the first time it arrived
-            store.update(
-                mail_id,
-                thread_key=d.get("thread_key"),
-                superseded_by=d["superseded_by"],
-            )
-    # persist the cursor only AFTER every delivery is safely filed into the
-    # maildir: a crash mid-filing leaves the cursor un-advanced, so the next
-    # poll re-serves the tail (at-least-once) instead of losing it. The
-    # write itself is atomic (tmp+fsync+rename): a torn cursor write would
-    # permanently pin the client to empty polls.
-    if next_cursor:
-        atomic_write_text(cursor_path, next_cursor)
-    elif res.get("deliveries"):
-        # The server emits next_cursor only on a FULL page; ANY partial page
-        # (first or later) would otherwise advance no cursor — the stored
-        # cursor would persist and every subsequent poll re-serve the same
-        # un-acked tail forever. Synthesize the cursor at the last returned
-        # delivery — the same (created_at, id) keyset the server itself
-        # encodes — but only when that actually moves forward: a lease-revert
-        # repair sits behind the cursor, and following it would rewind
-        # (`_cursor_advances`). An EMPTY page keeps the prior cursor: there is
-        # nothing to advance past (empty-poll no-op).
-        last = res["deliveries"][-1]
-        synthesized = _encode_client_cursor(last["created_at"], last["delivery_id"])
-        if _cursor_advances(cursor, synthesized):
-            atomic_write_text(cursor_path, synthesized)
+    lock = ClaimLock(cfg)
+    if not lock.acquire(store.root):
+        # `lloom watch` is claiming for this identity: the mail is already in
+        # the maildir, and a second claimer would only split it
+        _poll_local(args, cfg, store, lock)
+        return
+    try:
+        with _make_client(cfg, args.server) as c:
+            # files every delivery into new/, THEN advances the cursor (see
+            # inbox.advance_cursor: at-least-once across a crash)
+            res = claim(c, cfg, store, limit=args.limit, wait=args.wait, cursor=args.cursor)
+    finally:
+        lock.release()
+    next_cursor = res.get("next_cursor")
+    deliveries = res.get("deliveries") or []
+    # anything already waiting in new/ that no poll has shown (a hook or an
+    # earlier watcher filed it) is shown too; everything shown gets stamped
+    claimed = [d.get("delivery_id") for d in deliveries if isinstance(d, dict)]
+    extra = take_waiting(store, skip_deliveries=claimed)
+    if extra:
+        res = {**res, "deliveries": list(deliveries) + extra}
     if args.json:
         print(json.dumps(res))
         return
@@ -1247,9 +1211,40 @@ def cmd_poll(args) -> None:
         print(f"nothing new{_since_last_delivery(cursor_path)}")
         if not args.wait:
             print("  poll once per turn; `lloom poll --wait 30` blocks until mail arrives")
-    for d in res.get("deliveries", []):
+    _print_deliveries(res.get("deliveries", []))
+    if next_cursor:
+        print(f"cursor: {next_cursor}")
+
+
+def _poll_local(args, cfg: Config, store: MailStore, lock) -> None:
+    """`lloom poll` while `lloom watch` holds the claim: hand over what the
+    watcher filed into new/ (filing it to read/), waiting up to `--wait`
+    seconds for something to arrive."""
+    from .inbox import take_waiting
+
+    deadline = time.monotonic() + max(0, args.wait or 0)
+    deliveries = take_waiting(store)
+    while not deliveries and time.monotonic() < deadline:
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+        deliveries = take_waiting(store)
+    holder = lock.holder() or {}
+    root = holder.get("mail_root")
+    if args.json:
+        print(json.dumps({"deliveries": deliveries, "source": "maildir", "mail_root": str(store.root)}))
+        return
+    who = f"pid {holder['pid']}" if holder.get("pid") else "another process"
+    print(f"(from the local mailbox: `lloom watch` ({who}) collects mail for this identity)")
+    if root and Path(root) != store.root:
+        print(f"  note: it files into {root}, not {store.root}; run lloom from that directory")
+    if not deliveries:
+        print(f"nothing new{_since_last_delivery(cfg.cursor_path())}")
+    _print_deliveries(deliveries)
+
+
+def _print_deliveries(deliveries: list) -> None:
+    for d in deliveries:
         print(f"[{d['delivery_id']}] {d['sender']} ({d['kind']}): {d['body']}")
-        line = f"  state={d['state']}"
+        line = f"  state={d['state']}" if d.get("state") else f"  mail={d.get('mail_id')}"
         if d.get("sender_tier"):
             line += f" tier={d['sender_tier']}"
         if d.get("thread_key"):
@@ -1277,8 +1272,6 @@ def cmd_poll(args) -> None:
                 f"  superseded_by={d['superseded_by']}"
                 " — newer message from this sender in this thread; answer that one"
             )
-    if next_cursor:
-        print(f"cursor: {next_cursor}")
 
 
 def _delivery_id_for(store: MailStore, token: str) -> str:
@@ -1589,15 +1582,18 @@ def cmd_skills(args) -> None:
 
 
 def cmd_watch(args) -> None:
-    """`lloom watch` — signal that mail is waiting, never claim it (see
-    watch.py). `--format jsonl` feeds the Pi/OpenCode adapters; `--format
-    line` prints the rendered sentence for waking signals only, one per line,
-    which is what a Claude Code plugin monitor turns into a notification."""
-    from .watch import render_signal, watch_loop
+    """`lloom watch` — collect mail in the background and say when some is
+    waiting (see watch.py). It claims for this identity, files each delivery
+    into the maildir, and emits counts only. `--format jsonl` feeds the
+    Pi/OpenCode adapters; `--format line` prints the rendered sentence for
+    waking signals only, one per line."""
+    from .inbox import ClaimLock, claim, waiting
+    from .watch import counts, render_signal, signal_event, watch_loop
 
     cfg = ensure_config(args.config)
     key = _require_key(cfg)
     url = _server_url(cfg, args.server)
+    store = _mail_store(cfg)
 
     def emit(event: dict) -> None:
         if args.format == "jsonl":
@@ -1611,17 +1607,19 @@ def cmd_watch(args) -> None:
             print(f"lloom watch: {event['message']}", file=sys.stderr, flush=True)
 
     if args.once:
-        from .watch import signal_event
-
-        try:
-            with Client(url, key) as c:
-                peek = c.pending()
-        except LloomError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            sys.exit(3 if exc.code == "peek_unsupported" else 1)
-        event = signal_event(peek, wake=False, reason="once")
+        lock = ClaimLock(cfg)
+        if lock.acquire(store.root):
+            try:
+                with Client(url, key) as c:
+                    claim(c, cfg, store)
+            except LloomError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(2 if exc.status in (401, 403) else 1)
+            finally:
+                lock.release()
+        event = signal_event(counts(waiting(store)), wake=False, reason="once")
         if args.format == "jsonl":
-            print(json.dumps(event))
+            print(json.dumps({**event, "text": render_signal(event)}))
         else:
             print(render_signal(event) if event["pending"] else "lloom: no mail waiting")
         return
@@ -1633,7 +1631,7 @@ def cmd_watch(args) -> None:
     async def run() -> int:
         async with AsyncClient(url, key) as c:
             return await watch_loop(
-                c, emit, wake=args.wake, wait=args.wait, debounce=args.debounce
+                c, cfg, store, emit, wake=args.wake, wait=args.wait, debounce=args.debounce
             )
 
     try:
@@ -1646,9 +1644,12 @@ def cmd_watch(args) -> None:
 
 def cmd_hook(args) -> None:
     """`lloom hook context|stop` — a harness hook (Claude Code, Codex). Reads
-    the hook's JSON on stdin, peeks once, prints the hook's JSON answer or
-    nothing. A hook must never break the session it runs in, so every failure
-    is a quiet no-op with one line on stderr."""
+    the hook's JSON on stdin; unless a watcher already collects for this
+    identity, claims once (no wait) into the maildir; then prints the hook's
+    JSON answer about what is waiting, or nothing. A hook must never break
+    the session it runs in, so every failure is a quiet no-op with one line
+    on stderr."""
+    from .inbox import ClaimLock, claim, waiting
     from .watch import hook_response
 
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
@@ -1663,12 +1664,21 @@ def cmd_hook(args) -> None:
     if not key:
         return
     try:
-        with Client(_server_url(cfg, args.server), key, timeout=args.timeout) as c:
-            peek = c.pending()
+        store = _mail_store(cfg)
+        lock = ClaimLock(cfg)
+        if lock.acquire(store.root):
+            try:
+                with Client(_server_url(cfg, args.server), key, timeout=args.timeout) as c:
+                    claim(c, cfg, store)
+            except Exception as exc:
+                # what is already in the maildir is still worth reporting
+                print(f"lloom hook: {exc}", file=sys.stderr)
+            finally:
+                lock.release()
+        out = hook_response(args.event, payload, waiting(store), cfg.state_dir())
     except Exception as exc:
         print(f"lloom hook: {exc}", file=sys.stderr)
         return
-    out = hook_response(args.event, payload, peek, cfg.state_dir())
     if out is not None:
         print(json.dumps(out))
 
@@ -1923,26 +1933,26 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("mcp-proxy", help="run the stdio MCP server `lloom`")
     p.add_argument("--channel", action="store_true",
                    help="also act as a Claude Code channel: notify the session when mail is waiting"
-                        " (counts only; nothing is claimed). Same as LLOOM_CHANNEL=1. Launch Claude"
+                        " (counts only; mail is collected into the maildir). Same as LLOOM_CHANNEL=1. Launch Claude"
                         " Code with --dangerously-load-development-channels server:lloom")
     p.add_argument("--wake", choices=["private", "all", "none"], default="private",
                    help="channel mode: what wakes the session (default: newly arrived private mail)")
     p.set_defaults(func=cmd_proxy)
 
-    p = sub.add_parser("watch", help="notify when mail is waiting — peeks, never claims")
+    p = sub.add_parser("watch", help="collect mail into the maildir in the background and notify when some is waiting")
     p.add_argument("--format", choices=["jsonl", "line"], default="line",
                    help="jsonl: one event per line (adapters); line: the rendered notice, waking signals only")
     p.add_argument("--wake", choices=["private", "all", "none"], default="private",
                    help="what wakes the session (default: newly arrived private mail)")
-    p.add_argument("--wait", type=int, default=30, help="long-poll window per peek, seconds")
+    p.add_argument("--wait", type=int, default=30, help="long-poll window per mailbox poll, seconds")
     p.add_argument("--debounce", type=float, default=3.0, help="coalesce a burst of mail, seconds")
-    p.add_argument("--once", action="store_true", help="peek once, print, exit (never blocks)")
+    p.add_argument("--once", action="store_true", help="collect once (no wait), print what is waiting, exit")
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("hook", help="harness hook entry point (Claude Code, Codex): JSON in, JSON out")
     p.add_argument("event", choices=["context", "stop"],
                    help="context: SessionStart/UserPromptSubmit additionalContext; stop: Stop-hook block on private mail")
-    p.add_argument("--timeout", type=float, default=5.0, help="peek timeout, seconds")
+    p.add_argument("--timeout", type=float, default=5.0, help="hub timeout, seconds")
     p.set_defaults(func=cmd_hook)
 
     p = sub.add_parser("skills", help="install the canonical .agents/skills for a coding agent")

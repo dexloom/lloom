@@ -134,11 +134,13 @@ guardrails* has the reasoning.
 
 `lloom skills install --agent <claude-code|codex|pi|opencode> --with-push`
 lets a running session know when mail is waiting, without being asked to poll.
-It **notifies, never delivers**:
+It **notifies, never injects**:
 
-- `lloom watch` peeks at the hub (`GET /v1/mailbox/pending`, non-claiming);
+- `lloom watch` collects mail in the background into the local maildir
+  (`.lloom/mail/new/`), as `lloom poll` would;
 - the session gets a fixed, counts-only sentence;
-- the agent then reads the mail with its usual `check_mailbox` / `lloom poll`.
+- the agent then reads the mail with its usual `check_mailbox` / `lloom poll`,
+  which answer from the maildir while the watcher runs.
 
 Claude Code can also be woken while idle through an MCP channel
 (`lloom mcp-proxy --channel`). Wakes default to private mail only, under a

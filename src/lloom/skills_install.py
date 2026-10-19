@@ -322,13 +322,13 @@ wake an IDLE session, run the proxy as a channel (research preview):
 (LLOOM_CHANNEL=1 reaches the proxy through Claude Code's environment; the
 alternative is registering `lloom mcp-proxy --channel` as the server.)
 
-Notices carry counts only; nothing is claimed until the agent polls."""
+Notices carry counts only; the agent reads the mail with check_mailbox."""
 
 CODEX_TRUST_NOTE = """\
 Codex runs only hooks you have trusted: open /hooks once in Codex and trust
 the three `lloom hook` entries. Codex hooks fire at turn boundaries (session
 start, each prompt, the end of a turn); they cannot wake an idle session.
-Notices carry counts only; nothing is claimed until the agent polls."""
+Notices carry counts only; the agent reads the mail with `lloom poll`."""
 
 NO_PUSH_NOTE = "{agent}: no push adapter yet; `lloom poll --wait 30` remains the way to wait for mail."
 

@@ -87,6 +87,10 @@ _META_KEYS = (
     "dead",
     "error",
     "acked_at",
+    "labels",
+    "sender_tier",
+    "notified_at",
+    "shown_at",
     "created_at",
 )
 
@@ -156,7 +160,13 @@ class MailStore:
     # -- public API --------------------------------------------------------
 
     def receive(self, mail: dict) -> str:
-        """File an inbound delivery into new/."""
+        """File an inbound delivery into new/. One already read locally
+        (same content, so same id, already in read/) stays there: the hub
+        re-serves an un-acked delivery after its lease, and that is not news."""
+        self._validate(mail)
+        id_ = self._hash(mail)
+        if (self._root / "read" / f"{id_}.md").exists():
+            return id_
         return self.store(mail, folder="new")
 
     def enqueue(self, mail: dict) -> str:
@@ -579,6 +589,14 @@ class MailStore:
         lines.append(f"dead: {val('dead')}")
         lines.append(f"error: {val('error')}")
         lines.append(f"acked_at: {val('acked_at')}")
+        # inbound-only annotations, written only when present so outbound
+        # files (and every file written before they existed) stay unchanged
+        labels = mail.get("labels")
+        if labels is not None:
+            lines.append(f"labels: {json.dumps(labels, ensure_ascii=False)}")
+        for key in ("sender_tier", "notified_at", "shown_at"):
+            if mail.get(key) is not None:
+                lines.append(f"{key}: {val(key)}")
         lines.append(f"created_at: {val('created_at')}")
         lines.append("---")
         # EXACT body contract: file = frontmatter + "\n" + body + "\n", body
@@ -605,11 +623,11 @@ class MailStore:
             key, _, value = lines[i].partition(":")
             key = key.strip()
             value = value.strip()
-            if key == "tags":
-                meta["tags"] = cls._parse_tags(value)
+            if key in ("tags", "labels"):
+                meta[key] = cls._parse_tags(value)
             elif key == "location":
                 meta["location"] = cls._parse_location(value)
-            elif key in ("created_at", "acked_at", "radius_km"):
+            elif key in ("created_at", "acked_at", "notified_at", "shown_at", "radius_km"):
                 meta[key] = None if value in ("null", "None") else float(value)
             elif key in ("embed", "dead"):
                 meta[key] = value == "true"

@@ -2,15 +2,17 @@
  * lloom for OpenCode: proactive "mail is waiting" notices.
  *
  * Installed by `lloom skills install --agent opencode --with-push`. The
- * plugin runs `lloom watch --format jsonl` (a non-claiming peek: it only
- * counts what is waiting and never fetches it). On a waking signal it
+ * plugin runs `lloom watch --format jsonl` in the project directory: it
+ * collects mail into the project's `.lloom/mail/new/` and reports counts
+ * of what is waiting. On a waking signal it
  * prompts the current session with the watcher's fixed sentence, at once
  * when the session is idle and on `session.idle` when it is busy. A
  * non-waking signal goes in as context only (`noReply`). Every signal also
  * shows a toast.
  *
  * The injected text carries counts, never message bodies. The agent reads
- * the mail itself (`lloom poll` / `check_mailbox`) under the lloom-receive
+ * the mail itself (`lloom poll` / `check_mailbox`, which read the maildir
+ * while the watcher runs) under the lloom-receive
  * rules.
  *
  * Environment: LLOOM_BIN (default "lloom"), LLOOM_WATCH_WAKE

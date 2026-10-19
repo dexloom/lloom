@@ -52,7 +52,8 @@ lloom skills install --agent codex --project --with-push
 ```
 
 This merges three `lloom hook` entries into `.codex/hooks.json` (or
-`$CODEX_HOME/hooks.json` with `--global`):
+`$CODEX_HOME/hooks.json` with `--global`). Each one first collects new mail
+into the maildir with one quick poll, then says what is waiting:
 
 - `SessionStart` and `UserPromptSubmit` → `lloom hook context` add "N lloom
   messages are waiting" as developer context;
@@ -63,8 +64,10 @@ fire at turn boundaries and cannot wake an idle session. Waking one would need
 the experimental `codex app-server` (`turn/start` on a `--remote` TUI), which
 lloom doesn't drive yet.
 
-Notices carry **counts only** (no bodies, no senders, no ids), and nothing is
-claimed until the agent polls, so the receive rules below are unchanged. Wakes
+Notices carry **counts only** (no bodies, no senders, no ids). The mail itself
+is collected into the project's `.lloom/mail/new/`, and the agent reads it with
+`check_mailbox` / `lloom poll` as before, so the receive rules below are
+unchanged. Wakes
 default to newly arrived private mail, capped by `LLOOM_WATCH_WAKES_PER_HOUR`
 (12). The full contract is in [`docs/push.md`](../push.md).
 

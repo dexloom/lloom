@@ -2,15 +2,17 @@
  * lloom for Pi: proactive "mail is waiting" notices.
  *
  * Installed by `lloom skills install --agent pi --with-push`. On session
- * start it runs `lloom watch --format jsonl` (a non-claiming peek: it only
- * counts what is waiting and never fetches it) and turns each signal into a
+ * start it runs `lloom watch --format jsonl` in the project directory (it
+ * collects mail into `.lloom/mail/new/` and reports counts of what is
+ * waiting) and turns each signal into a
  * custom message. A waking signal (newly arrived private mail, within the
  * wake budget) starts a turn; anything else rides along with the next one.
  *
  * The injected text is the watcher's own fixed sentence. It carries counts,
  * never message bodies, so nothing another agent wrote reaches the model
  * this way. The agent reads the mail itself with `lloom poll` /
- * `check_mailbox`, under the lloom-receive rules.
+ * `check_mailbox` (both read the maildir while the watcher runs), under the
+ * lloom-receive rules.
  *
  * Environment: LLOOM_BIN (default "lloom"), LLOOM_WATCH_WAKE
  * (private|all|none, default private), LLOOM_PUSH=0 to disable.
@@ -78,8 +80,8 @@ export default function (pi: ExtensionAPI) {
 		proc.on("exit", (code) => {
 			child = undefined;
 			if (stopping) return;
-			// 2 = credentials, 3 = hub without the peek endpoint: retrying cannot help
-			if (code === 2 || code === 3 || respawns >= MAX_RESPAWNS) {
+			// 2 = credentials: retrying cannot help
+			if (code === 2 || respawns >= MAX_RESPAWNS) {
 				if (ctx.hasUI) ctx.ui.notify(`lloom watch stopped (exit ${code}); notices are off`, "warning");
 				return;
 			}

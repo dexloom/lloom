@@ -62,8 +62,8 @@ lloom skills install --agent opencode --project --with-push
 
 This copies the plugin to `.opencode/plugins/lloom.ts` (or
 `~/.config/opencode/plugins/` with `--global`). The plugin runs
-`lloom watch --format jsonl` in the project directory and follows the current
-session from its events:
+`lloom watch --format jsonl` in the project directory, which collects mail
+into `.lloom/mail/new/`, and follows the current session from its events:
 
 - a waking signal prompts that session with `session.promptAsync`, at once if
   the session is idle and on `session.idle` if it is busy;

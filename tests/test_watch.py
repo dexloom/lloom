@@ -1,12 +1,13 @@
-"""Proactive notifications: notify-only, never a claim.
+"""Proactive notifications: collect in the background, notify, never inject.
 
-The watcher, the hooks and the Claude Code channel all read the hub's
-non-claiming peek (`pending`) and never its claiming `mailbox`; every fake
-here records a `mailbox` call so the tests can assert that guarantee.
+The watcher is the one claimer for its identity: it files what the hub
+serves into the maildir and announces counts. `lloom poll`, `check_mailbox`
+and the hooks then read the maildir instead of claiming over it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import sys
@@ -19,32 +20,63 @@ from pydantic import TypeAdapter
 
 from lloom import cli, proxy, skills_install, watch
 from lloom.client import LloomError
+from lloom.config import Config
+from lloom.inbox import ClaimLock, take_waiting, waiting
+from lloom.mailstore import MailStore
 from lloom.watch import WakeBudget, Watcher, hook_response, render_signal, watch_loop
 
 SECRET = {"api_key": "llm_key", "agent_id": "agent:1", "handle": "@me"}
 
+_seq = [0]
 
-def peek(private=0, broadcast=0, token="t0", newest_at=None):
+
+def delivery(kind="private", body="hello", sender="@a"):
+    _seq[0] += 1
+    n = _seq[0]
     return {
-        "pending": private + broadcast,
-        "private": private,
-        "broadcast": broadcast,
-        "newest_at": newest_at,
-        "token": token,
+        "delivery_id": f"delivery:{n}",
+        "message_id": f"message:{n}",
+        "sender": sender,
+        "kind": kind,
+        "body": f"{body} {n}",
+        "created_at": f"2026-10-19T00:00:{n:02d}Z",
+        "state": "read",
+        "labels": [],
     }
 
 
+def page(*deliveries):
+    return {"deliveries": list(deliveries), "next_cursor": None}
+
+
+def mail(kind="private", id_=None, notified=False):
+    _seq[0] += 1
+    m = {"id": id_ or f"m{_seq[0]}", "kind": kind}
+    if notified:
+        m["notified_at"] = 1.0
+    return m
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LLOOM_MAIL_DIR", raising=False)
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps(SECRET))
+    cfg = Config(cfg_path)
+    return cfg, MailStore(config=cfg)
+
+
 class ScriptedAsyncClient:
-    """`pending()` answers from a script; once it runs dry it blocks, like an
-    idle long-poll. `mailbox()` exists only to be caught being called."""
+    """`mailbox()` answers from a script; once it runs dry it blocks, like an
+    idle long-poll."""
 
     def __init__(self, script):
         self.script = list(script)
         self.calls: list[dict] = []
-        self.mailbox_calls: list[dict] = []
 
-    async def pending(self, since=None, wait=0):
-        self.calls.append({"since": since, "wait": wait})
+    async def mailbox(self, limit=50, cursor=None, wait=0):
+        self.calls.append({"cursor": cursor, "wait": wait})
         if not self.script:
             await anyio.sleep(3600)
         item = self.script.pop(0)
@@ -52,20 +84,20 @@ class ScriptedAsyncClient:
             raise item
         return item
 
-    async def mailbox(self, **kw):  # pragma: no cover - the assertion is that it never runs
-        self.mailbox_calls.append(kw)
-        return {"deliveries": []}
 
-
-def run_loop(client, *, max_peeks, **kw):
+def run_loop(client, cfg, store, *, max_rounds, **kw):
     events: list[dict] = []
     kw.setdefault("debounce", 0)
 
     async def main():
-        return await watch_loop(client, events.append, max_peeks=max_peeks, **kw)
+        return await watch_loop(client, cfg, store, events.append, max_rounds=max_rounds, **kw)
 
     code = anyio.run(main)
     return code, events
+
+
+def signals(events):
+    return [e for e in events if e["type"] == "signal"]
 
 
 @pytest.fixture(autouse=True)
@@ -83,11 +115,11 @@ def _no_sleep(monkeypatch):
 
 
 def test_render_is_counts_only_and_fact_shaped():
-    text = render_signal(watch.signal_event(peek(private=2, broadcast=1), wake=True, reason="new"))
+    c = {"pending": 3, "private": 2, "broadcast": 1}
+    text = render_signal(watch.signal_event(c, wake=True, reason="new"))
     assert text.startswith("lloom: 2 private messages and 1 broadcast are waiting")
-    assert "nothing has been claimed" in text
-    assert "untrusted" in text
-    single = render_signal(watch.signal_event(peek(private=1), wake=True, reason="new"))
+    assert "check_mailbox" in text and "untrusted" in text
+    single = render_signal(watch.signal_event({"pending": 1, "private": 1}, wake=True, reason="new"))
     assert "1 private message is waiting" in single
 
 
@@ -96,44 +128,52 @@ def test_render_is_counts_only_and_fact_shaped():
 
 def test_backlog_at_start_is_reported_without_waking():
     w = Watcher()
-    (ev,) = w.observe(peek(private=2, token="t1"))
-    assert ev["type"] == "signal" and ev["wake"] is False and ev["reason"] == "backlog"
+    (ev,), ids = w.observe([mail(id_="a"), mail(id_="b")])
+    assert ev["wake"] is False and ev["reason"] == "backlog" and ev["private"] == 2
+    assert ids == ["a", "b"]
 
 
 def test_empty_start_says_nothing():
-    assert Watcher().observe(peek(token="t0")) == []
+    assert Watcher().observe([]) == ([], [])
 
 
-def test_new_private_mail_wakes_unchanged_token_does_not():
+def test_new_private_mail_wakes_announced_mail_does_not():
     w = Watcher()
-    w.observe(peek(token="t0"))
-    (ev,) = w.observe(peek(private=1, token="t1"))
-    assert ev["wake"] is True and ev["private"] == 1
-    assert w.observe(peek(private=1, token="t1")) == []
+    w.observe([])
+    (ev,), ids = w.observe([mail(id_="a")])
+    assert ev["wake"] is True and ev["private"] == 1 and ids == ["a"]
+    assert w.observe([mail(id_="a", notified=True)]) == ([], [])
+
+
+def test_counts_cover_everything_waiting_not_just_the_new():
+    w = Watcher()
+    w.observe([])
+    (ev,), ids = w.observe([mail(notified=True), mail(id_="new")])
+    assert ev["pending"] == 2 and ids == ["new"]
 
 
 def test_broadcast_only_change_signals_without_waking():
     w = Watcher()
-    w.observe(peek(token="t0"))
-    (ev,) = w.observe(peek(broadcast=1, token="t1"))
+    w.observe([])
+    (ev,), _ = w.observe([mail("broadcast")])
     assert ev["wake"] is False
 
 
 def test_wake_policies():
     w = Watcher(wake="all")
-    w.observe(peek(token="t0"))
-    assert w.observe(peek(broadcast=1, token="t1"))[0]["wake"] is True
+    w.observe([])
+    assert w.observe([mail("broadcast")])[0][0]["wake"] is True
     w = Watcher(wake="none")
-    w.observe(peek(token="t0"))
-    assert w.observe(peek(private=1, token="t1"))[0]["wake"] is False
+    w.observe([])
+    assert w.observe([mail()])[0][0]["wake"] is False
     with pytest.raises(ValueError):
         Watcher(wake="sometimes")
 
 
-def test_wake_budget_turns_wakes_into_signals_with_one_status(monkeypatch):
+def test_wake_budget_turns_wakes_into_signals_with_one_status():
     w = Watcher(budget=WakeBudget(limit=2))
-    w.observe(peek(token="t0"))
-    wakes = [w.observe(peek(private=n, token=f"t{n}")) for n in (1, 2, 3, 4)]
+    w.observe([])
+    wakes = [w.observe([mail()])[0] for _ in range(4)]
     assert [evs[-1]["wake"] for evs in wakes] == [True, True, False, False]
     statuses = [e for evs in wakes for e in evs if e["type"] == "status"]
     assert len(statuses) == 1 and statuses[0]["state"] == "wake_budget"
@@ -159,59 +199,170 @@ def test_wake_budget_env(monkeypatch):
 # -- the loop --------------------------------------------------------------------------
 
 
-def test_loop_peeks_with_since_and_never_claims():
-    client = ScriptedAsyncClient([peek(token="t0"), peek(private=1, token="t1"), peek(private=1, token="t1")])
-    code, events = run_loop(client, max_peeks=3, wait=30)
+def test_loop_files_into_the_maildir_then_notifies(env):
+    cfg, store = env
+    client = ScriptedAsyncClient([page(), page(delivery()), page()])
+    code, events = run_loop(client, cfg, store, max_rounds=3, wait=30)
     assert code == 0
-    assert client.calls[0] == {"since": None, "wait": 0}
-    assert client.calls[1] == {"since": "t0", "wait": 30}
-    assert client.calls[2] == {"since": "t1", "wait": 30}
-    signals = [e for e in events if e["type"] == "signal"]
-    assert len(signals) == 1 and signals[0]["wake"] is True
     assert events[0]["type"] == "status" and events[0]["state"] == "ready"
-    assert client.mailbox_calls == []
+    # first claim answers at once; later ones long-poll from the stored cursor
+    assert client.calls[0]["wait"] == 0 and client.calls[0]["cursor"] == cli.EPOCH_CURSOR
+    assert client.calls[1]["wait"] == 30
+    assert client.calls[2]["cursor"] != cli.EPOCH_CURSOR, "cursor advanced after filing"
+    (sig,) = signals(events)
+    assert sig["wake"] is True and sig["private"] == 1
+    (filed,) = store.list("new")
+    assert filed["from"] == "@a" and filed["notified_at"]
+    assert "hello" not in json.dumps(events), "a signal never carries a body"
 
 
-def test_loop_debounce_supersedes_with_a_fresh_peek():
-    client = ScriptedAsyncClient([peek(token="t0"), peek(private=1, token="t1"), peek(private=3, token="t3")])
-    _, events = run_loop(client, max_peeks=2, debounce=0.01)
-    (signal,) = [e for e in events if e["type"] == "signal"]
-    assert signal["private"] == 3
-    assert client.calls[-1] == {"since": None, "wait": 0}
+def test_loop_startup_backlog_does_not_wake(env):
+    cfg, store = env
+    client = ScriptedAsyncClient([page(delivery(), delivery())])
+    _, events = run_loop(client, cfg, store, max_rounds=1)
+    (sig,) = signals(events)
+    assert sig["reason"] == "backlog" and sig["wake"] is False and sig["private"] == 2
 
 
-def test_loop_stops_on_hub_without_peek():
-    client = ScriptedAsyncClient([LloomError("peek_unsupported", "old hub", 404)])
-    code, events = run_loop(client, max_peeks=5)
-    assert code == 3
-    assert events[-1] == {"v": 1, "type": "status", "state": "peek_unsupported", "message": "old hub"}
+def test_loop_restart_does_not_reannounce(env):
+    cfg, store = env
+    run_loop(ScriptedAsyncClient([page(delivery())]), cfg, store, max_rounds=1)
+    _, events = run_loop(ScriptedAsyncClient([page()]), cfg, store, max_rounds=1)
+    assert signals(events) == []
 
 
-def test_loop_stops_on_bad_credentials():
-    client = ScriptedAsyncClient([LloomError("unauthenticated", "revoked", 401)])
-    code, _ = run_loop(client, max_peeks=5)
-    assert code == 2
+def test_loop_debounce_coalesces_a_burst(env):
+    cfg, store = env
+    client = ScriptedAsyncClient([page(), page(delivery()), page(delivery(), delivery())])
+    _, events = run_loop(client, cfg, store, max_rounds=2, debounce=0.01)
+    (sig,) = signals(events)
+    assert sig["private"] == 3
+    assert client.calls[-1]["wait"] == 0
 
 
-def test_loop_retries_transient_errors():
+def test_loop_stops_on_bad_credentials(env):
+    cfg, store = env
+    code, events = run_loop(
+        ScriptedAsyncClient([LloomError("unauthenticated", "revoked", 401)]), cfg, store, max_rounds=5
+    )
+    assert code == 2 and events[-1]["state"] == "unauthenticated"
+
+
+def test_loop_retries_transient_errors(env):
+    cfg, store = env
     client = ScriptedAsyncClient(
         [
             OSError("connection refused"),
             LloomError("quota_exceeded", "slow down", 429, retry_after=0.01),
-            peek(token="t0"),
-            peek(private=1, token="t1"),
+            page(),
+            page(delivery()),
         ]
     )
-    code, events = run_loop(client, max_peeks=4)
+    code, events = run_loop(client, cfg, store, max_rounds=4)
     assert code == 0
-    assert any(e["type"] == "signal" and e["wake"] for e in events)
+    assert any(e["wake"] for e in signals(events))
 
 
-def test_loop_without_token_paces_instead_of_spinning():
-    client = ScriptedAsyncClient([{"pending": 0}, {"pending": 0}, {"pending": 0}])
-    run_loop(client, max_peeks=3)
-    # no token -> no since -> never a blocking peek that would answer instantly
-    assert all(c == {"since": None, "wait": 0} for c in client.calls)
+def test_second_watcher_observes_instead_of_claiming(env):
+    cfg, store = env
+    holder = ClaimLock(cfg)
+    assert holder.acquire(store.root)
+    try:
+        client = ScriptedAsyncClient([page(delivery())])
+        _, events = run_loop(client, cfg, store, max_rounds=2)
+        assert client.calls == [], "only the lock holder claims"
+        assert any(e.get("state") == "observing" for e in events)
+    finally:
+        holder.release()
+    assert ClaimLock(cfg).acquire(store.root), "released on exit"
+
+
+# -- reading back while a watcher holds the claim ------------------------------------------
+
+
+def test_take_waiting_shows_once_and_keeps_mail_in_new(env):
+    _, store = env
+    from lloom.inbox import file_all
+
+    file_all(store, "@me", [delivery()])
+    (d,) = take_waiting(store)
+    assert d["sender"] == "@a" and d["mail_id"]
+    assert take_waiting(store) == []
+    assert len(store.list("new")) == 1 and waiting(store) == []
+
+
+def test_a_delivery_already_read_is_not_refiled_into_new(env):
+    _, store = env
+    from lloom.inbox import file_all
+
+    d = delivery()
+    (mail_id,) = file_all(store, "@me", [d])
+    store.file(mail_id)
+    file_all(store, "@me", [d])  # the hub re-serves it after the lease
+    assert store.list("new") == []
+
+
+def test_poll_reads_the_maildir_while_a_watcher_claims(env, capsys, monkeypatch):
+    cfg, store = env
+    from lloom.inbox import file_all
+
+    file_all(store, "@me", [delivery(body="ping")])
+    monkeypatch.setattr(cli, "Client", None)  # any hub call would crash
+    lock = ClaimLock(cfg)
+    lock.acquire(store.root)
+    try:
+        cli.main(["--config", str(cfg.path), "poll"])
+        out = capsys.readouterr().out
+        assert "collects mail for this identity" in out and "ping" in out
+        cli.main(["--config", str(cfg.path), "poll", "--json"])
+        assert json.loads(capsys.readouterr().out)["deliveries"] == []
+    finally:
+        lock.release()
+
+
+def test_check_mailbox_reads_the_maildir_while_a_watcher_claims(env, monkeypatch):
+    cfg, store = env
+    from lloom.inbox import file_all
+
+    file_all(store, "@me", [delivery(body="ping")])
+
+    class NoHub:
+        def __init__(self, *a, **k):
+            pass
+
+        async def mailbox(self, **kw):  # pragma: no cover - must not run
+            raise AssertionError("claimed over the watcher")
+
+    monkeypatch.setattr(proxy, "AsyncClient", NoHub)
+    p = proxy.LloomProxy("http://test", "llm_key", cfg)
+    lock = ClaimLock(cfg)
+    lock.acquire(store.root)
+    try:
+        res = json.loads(asyncio.run(p.check_mailbox()))
+    finally:
+        lock.release()
+    (d,) = res["deliveries"]
+    assert d["untrusted"] is True and d["body"].startswith("ping")
+    assert res["source"] == "maildir"
+
+
+def test_check_mailbox_files_what_it_claims(env, monkeypatch):
+    cfg, store = env
+    d = delivery(body="direct")
+
+    class Hub:
+        def __init__(self, *a, **k):
+            pass
+
+        async def mailbox(self, limit=50, cursor=None, wait=0):
+            return page(d)
+
+    monkeypatch.setattr(proxy, "AsyncClient", Hub)
+    p = proxy.LloomProxy("http://test", "llm_key", cfg)
+    res = json.loads(asyncio.run(p.check_mailbox()))
+    assert [x["delivery_id"] for x in res["deliveries"]] == [d["delivery_id"]]
+    (filed,) = store.list("new")
+    assert filed["delivery_id"] == d["delivery_id"] and filed["shown_at"]
 
 
 # -- hooks -------------------------------------------------------------------------------
@@ -219,28 +370,30 @@ def test_loop_without_token_paces_instead_of_spinning():
 
 def test_hook_context_announces_once_per_session(tmp_path):
     payload = {"session_id": "s1", "hook_event_name": "UserPromptSubmit"}
-    out = hook_response("context", payload, peek(private=1, token="t1"), tmp_path)
+    mails = [mail(id_="a")]
+    out = hook_response("context", payload, mails, tmp_path)
     assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     assert "1 private message is waiting" in out["hookSpecificOutput"]["additionalContext"]
-    assert hook_response("context", payload, peek(private=1, token="t1"), tmp_path) is None
+    assert hook_response("context", payload, mails, tmp_path) is None
     # another session hears about the same mail on its own
-    assert hook_response("context", {"session_id": "s2"}, peek(private=1, token="t1"), tmp_path)
+    assert hook_response("context", {"session_id": "s2"}, mails, tmp_path)
 
 
 def test_hook_stop_blocks_only_on_private_and_never_twice(tmp_path):
-    assert hook_response("stop", {"session_id": "s"}, peek(broadcast=2, token="t1"), tmp_path) is None
-    assert hook_response("stop", {"session_id": "s", "stop_hook_active": True}, peek(private=1, token="t2"), tmp_path) is None
-    out = hook_response("stop", {"session_id": "s"}, peek(private=1, token="t2"), tmp_path)
+    s = {"session_id": "s"}
+    assert hook_response("stop", s, [mail("broadcast", id_="b")], tmp_path) is None
+    assert hook_response("stop", {**s, "stop_hook_active": True}, [mail(id_="p")], tmp_path) is None
+    out = hook_response("stop", s, [mail(id_="p")], tmp_path)
     assert out["decision"] == "block" and "private message" in out["reason"]
-    assert hook_response("stop", {"session_id": "s"}, peek(private=1, token="t2"), tmp_path) is None
+    assert hook_response("stop", s, [mail(id_="p")], tmp_path) is None
 
 
-def test_hook_nothing_pending_is_silent(tmp_path):
-    assert hook_response("context", {}, peek(token="t0"), tmp_path) is None
+def test_hook_nothing_waiting_is_silent(tmp_path):
+    assert hook_response("context", {}, [], tmp_path) is None
 
 
 def test_hook_session_id_cannot_escape_state_dir(tmp_path):
-    hook_response("context", {"session_id": "../../etc/x"}, peek(private=1, token="t1"), tmp_path)
+    hook_response("context", {"session_id": "../../etc/x"}, [mail()], tmp_path)
     files = list((tmp_path / "hooks").glob("*.json"))
     assert len(files) == 1 and files[0].parent == tmp_path / "hooks"
 
@@ -260,24 +413,21 @@ class FakeSyncClient:
     def __exit__(self, *exc):
         return None
 
-    def pending(self, since=None, wait=0):
-        self.state.setdefault("pending_calls", []).append({"since": since, "wait": wait})
+    def mailbox(self, limit=50, cursor=None, wait=0):
+        self.state.setdefault("mailbox_calls", []).append({"cursor": cursor, "wait": wait})
         err = self.state.get("error")
         if err:
             raise err
-        return self.state["peek"]
-
-    def mailbox(self, **kw):  # pragma: no cover
-        self.state.setdefault("mailbox_calls", []).append(kw)
-        return {"deliveries": []}
+        return self.state.get("result") or page()
 
 
 @pytest.fixture
 def cfx(monkeypatch, tmp_path):
-    FakeSyncClient.state = {"peek": peek(private=1, token="t1")}
+    FakeSyncClient.state = {"result": page(delivery())}
     monkeypatch.setattr(cli, "Client", FakeSyncClient)
     monkeypatch.delenv("LLOOM_SERVER_URL", raising=False)
     monkeypatch.delenv("LLOOM_CONFIG", raising=False)
+    monkeypatch.delenv("LLOOM_MAIL_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps(SECRET))
@@ -288,23 +438,20 @@ def test_cli_watch_once_jsonl(cfx, capsys):
     cli.main(["--config", str(cfx), "watch", "--once", "--format", "jsonl"])
     event = json.loads(capsys.readouterr().out)
     assert event["type"] == "signal" and event["private"] == 1 and event["wake"] is False
-    assert FakeSyncClient.state["pending_calls"] == [{"since": None, "wait": 0}]
-    assert "mailbox_calls" not in FakeSyncClient.state
+    assert FakeSyncClient.state["mailbox_calls"][0]["wait"] == 0
+    assert len(list((cfx.parent / ".lloom" / "mail" / "new").glob("*.md"))) == 1
 
 
-def test_cli_watch_once_old_hub_exits_3(cfx, capsys):
-    FakeSyncClient.state["error"] = LloomError("peek_unsupported", "old hub", 404)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["--config", str(cfx), "watch", "--once"])
-    assert exc.value.code == 3
-
-
-def test_cli_hook_stop_reads_stdin_and_blocks(cfx, capsys, monkeypatch):
+def test_cli_hook_stop_claims_once_and_blocks(cfx, capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": "abc", "hook_event_name": "Stop"})))
     cli.main(["--config", str(cfx), "hook", "stop"])
     out = json.loads(capsys.readouterr().out)
     assert out["decision"] == "block"
     assert FakeSyncClient.state["timeouts"] == [5.0]
+    # what the hook announced, the next poll shows
+    FakeSyncClient.state["result"] = page()
+    cli.main(["--config", str(cfx), "poll"])
+    assert "hello" in capsys.readouterr().out
 
 
 def test_cli_hook_failure_is_a_quiet_noop(cfx, capsys, monkeypatch):
@@ -342,27 +489,28 @@ class ChannelAsyncClient:
     async def aclose(self):
         return None
 
-    async def pending(self, since=None, wait=0):
+    async def mailbox(self, limit=50, cursor=None, wait=0):
         if not self.script:
             await anyio.sleep(3600)
         return self.script.pop(0)
 
 
-def test_channel_mode_advertises_capability_and_notifies(monkeypatch):
+def test_channel_mode_advertises_capability_and_notifies(env, monkeypatch):
     from mcp import types
     from mcp.shared.memory import create_client_server_memory_streams
     from mcp.shared.message import SessionMessage
 
-    ChannelAsyncClient.script = [peek(token="t0"), peek(private=1, token="t1"), peek(private=1, token="t1")]
+    cfg, _ = env
+    ChannelAsyncClient.script = [page(), page(delivery()), page()]
     monkeypatch.setattr(proxy, "AsyncClient", ChannelAsyncClient)
     monkeypatch.setattr(watch, "DEFAULT_DEBOUNCE_S", 0)
     adapter = TypeAdapter(types.JSONRPCMessage)
     seen: dict = {}
 
     async def main():
-        mcp = proxy.build_proxy("http://test", "llm_key", channel=True)
+        mcp = proxy.build_proxy("http://test", "llm_key", config=cfg, channel=True)
         async with create_client_server_memory_streams() as (client, server), anyio.create_task_group() as tg:
-            tg.start_soon(proxy.serve_channel, mcp, "http://test", "llm_key", "private", server)
+            tg.start_soon(proxy.serve_channel, mcp, "http://test", "llm_key", "private", cfg, server)
 
             async def send(msg):
                 await client[1].send(SessionMessage(adapter.validate_python(msg)))
@@ -416,8 +564,8 @@ def test_channel_notifier_drops_non_waking_events():
 
     async def main():
         await n.emit(watch.status_event("ready", "x"))
-        await n.emit(watch.signal_event(peek(broadcast=1, token="t"), wake=False, reason="new"))
-        await n.emit(watch.signal_event(peek(private=1, token="t"), wake=True, reason="new"))
+        await n.emit(watch.signal_event({"pending": 1, "broadcast": 1}, wake=False, reason="new"))
+        await n.emit(watch.signal_event({"pending": 1, "private": 1}, wake=True, reason="new"))
 
     anyio.run(main)
     assert [m for m, _ in sent] == [proxy.CHANNEL_METHOD]
